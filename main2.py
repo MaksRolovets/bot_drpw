@@ -65,12 +65,42 @@ class ManagerReplyStates(StatesGroup):
 # =========================
 import re
 
-def clean_html_for_telegram(text):
-    # Удаляем все теги, кроме разрешённых
-    allowed_tags = ['b', 'strong', 'i', 'em', 'u', 'ins', 's', 'strike', 'del', 'a', 'code', 'pre']
-    # Превращаем список в регулярку
-    pattern = re.compile(r'<\/?(?!(' + '|'.join(allowed_tags) + r')\b)[a-z][a-z0-9]*\b[^>]*>', re.IGNORECASE)
-    return pattern.sub('', text)
+import re
+import html
+
+from bs4 import BeautifulSoup
+
+def clean_html_for_telegram(text, name=None):
+    if not text:
+        return text
+    if name:
+        text = text.replace('{name}', name)
+    
+    # Декодируем HTML-сущности
+    import html
+    text = html.unescape(text)
+    
+    # Парсим HTML
+    soup = BeautifulSoup(text, 'html.parser')
+    
+    # Разрешённые теги
+    allowed_tags = {'b', 'strong', 'i', 'em', 'u', 'ins', 's', 'strike', 'del', 'a', 'code', 'pre'}
+    
+    # Проходим по всем тегам, удаляем неподдерживаемые
+    for tag in soup.find_all():
+        if tag.name not in allowed_tags:
+            tag.unwrap()  # удаляем тег, сохраняя содержимое
+        else:
+            # Для ссылок оставляем только href
+            if tag.name == 'a':
+                href = tag.get('href')
+                tag.attrs = {}
+                if href:
+                    tag['href'] = href
+            else:
+                tag.attrs = {}  # удаляем все атрибуты у остальных
+    
+    return str(soup)
 
 def normalize(text: str) -> str:
     if not text:
