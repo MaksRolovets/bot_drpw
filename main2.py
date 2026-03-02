@@ -618,7 +618,7 @@ def register_handlers(dp: Dispatcher, bot: Bot):
         welcome = clean_html_for_telegram(welcome)
 
         btn_prod = InlineKeyboardBuilder()
-        btn_prod.button(text="🎬 фото-видео с производства", callback_data="prod_info_static")
+        btn_prod.button(text="☝️о Собственнике", callback_data="prod_info_static")
         await message.answer(welcome, reply_markup=btn_prod.as_markup(), parse_mode="HTML")
         await message.answer(
             f"<b>{name}!</b>\n\nЗдесь вы можете выбрать нужную категорию или написать сообщение менеджеру.",
@@ -883,6 +883,16 @@ def register_handlers(dp: Dispatcher, bot: Bot):
             logging.error(f"Ошибка отмены: {e}")
             await callback.answer("❌ Ошибка", show_alert=True)
 
+    @dp.callback_query(F.data == "calc_cancel_input", CalcStates.waiting_for_dimensions)
+    async def calc_cancel_input(callback: types.CallbackQuery, state: FSMContext):
+        await callback.answer()
+        await state.clear()
+        await callback.message.edit_text("❌ Расчёт отменён.")
+        await callback.message.answer(
+            "Главное меню:",
+            reply_markup=get_main_keyboard(callback.from_user.id)
+        )
+
     @dp.callback_query(F.data == "back_to_welcome")
     async def back_to_welcome_callback(callback: types.CallbackQuery):
         name = callback.from_user.first_name
@@ -944,15 +954,17 @@ def register_handlers(dp: Dispatcher, bot: Bot):
         type_map = {
             "calc_type_gazebo": "Беседка",
             "calc_type_bath": "Баня / Летний домик (24 диаметр)",
-            "calc_type_house": "Дом ПП (28 диаметр)"
+            "calc_type_house": "Дом (28 диаметр)"
         }
         chosen = type_map.get(callback.data, "Неизвестно")
         await state.update_data(building_type=callback.data)
 
+        cancel_kb = InlineKeyboardBuilder()
+        cancel_kb.button(text="❌ Отмена", callback_data="calc_cancel_input")
         await callback.message.edit_text(
-            f"Выбрано: {chosen}\n\nВведите размеры: два числа (ширина длина) или одно (площадь).",
-            reply_markup=None
-        )
+        f"Выбрано: {chosen}\n\nВведите размеры: два числа (ширина длина) или одно (площадь).",
+        reply_markup=cancel_kb.as_markup()
+    )
         await state.set_state(CalcStates.waiting_for_dimensions)
 
     @dp.callback_query(CalcStates.choosing_type, F.data == "calc_cancel")
