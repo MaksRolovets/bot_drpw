@@ -63,10 +63,8 @@ class ManagerReplyStates(StatesGroup):
 # =========================
 # ВСПОМОГАТЕЛЬНЫЕ
 # =========================
-import re
 
 import re
-import html
 
 from bs4 import BeautifulSoup
 
@@ -109,7 +107,7 @@ def normalize(text: str) -> str:
 
 def get_message_hash(msg):
     """Возвращает MD5-хеш содержимого отложенного сообщения."""
-    content = f"{msg['message_text']}_{msg['delay_hours']}_{msg.get('image_url', '')}"
+    content = f"{msg['message_text']}_{msg['delay_hours']}_{msg.get('delay_unit', 'hours')}_{msg.get('image_url', '')}_{msg.get('inline_text', '')}_{msg.get('inline_url', '')}"
     return hashlib.md5(content.encode('utf-8')).hexdigest()
 
 # =========================
@@ -127,7 +125,7 @@ def load_active_bot():
         if not bot:
             raise Exception("Нет активного бота")
         BOT_TOKEN = '8639319444:AAEU9aUaTq3rxuW6xf2nlfXCRiCN37qrD7c' #bot['bot_token']
-        ADMIN_ID = '5374683743'#bot['admin_id']
+        ADMIN_ID = 5374683743 #bot['admin_id']
         logging.info("✅ Бот загружен")
     except Error as e:
         logging.error(f"❌ Ошибка загрузки бота: {e}")
@@ -149,14 +147,15 @@ def load_messages():
     except Error as e:
         logging.error(f"❌ Ошибка загрузки сообщений: {e}")
 
-
 def load_buttons():
-    global DYNAMIC_BUTTONS, DYNAMIC_LIST, LAST_BUTTONS_UPDATE
+    global DYNAMIC_BUTTONS, DYNAMIC_LIST, BUTTON_TEXT_MAP, LAST_BUTTONS_UPDATE
     try:
         conn = mysql.connector.connect(**MYSQL_CONFIG)
         cursor = conn.cursor(dictionary=True)
+        
+        # Загружаем reply-кнопки с message_key
         cursor.execute("""
-            SELECT button_text, response_text, updated_at
+            SELECT button_text, response_text, message_key, updated_at
             FROM bot_buttons
             WHERE bot_id = 1 AND button_type = 'reply' AND is_active = 1
             ORDER BY menu_order
@@ -167,17 +166,19 @@ def load_buttons():
 
         new_dynamic = {}
         new_list = []
+        BUTTON_TEXT_MAP = {}
         max_upd = None
 
         for row in rows:
             text = row['button_text']
-            resp = row.get('response_text', '')
+            resp = row['response_text']
+            key = row['message_key']
             norm = normalize(text)
 
             if row['updated_at'] and (max_upd is None or row['updated_at'] > max_upd):
                 max_upd = row['updated_at']
 
-            # Специальные кнопки – добавляем в список, но не в DYNAMIC_BUTTONS
+            # Системные кнопки
             if text in (CONTACT_BUTTON_TEXT, MAILING_BUTTON_TEXT, CALC_BUTTON_TEXT):
                 new_list.append(text)
                 continue
@@ -186,18 +187,21 @@ def load_buttons():
             if resp and resp.strip():
                 new_dynamic[norm] = resp
                 new_list.append(text)
+                BUTTON_TEXT_MAP[norm] = {'response': resp, 'key': key}
             else:
                 logging.warning(f"Кнопка '{text}' пропущена: пустой ответ")
 
-        # Добавляем системные кнопки, если их ещё нет в списке
+        # Добавляем системные кнопки
         for sys_button in (CONTACT_BUTTON_TEXT, CALC_BUTTON_TEXT, MAILING_BUTTON_TEXT):
             if sys_button not in new_list:
                 new_list.append(sys_button)
 
         DYNAMIC_BUTTONS = new_dynamic
         DYNAMIC_LIST = new_list
+        BUTTON_TEXT_MAP = BUTTON_TEXT_MAP
         LAST_BUTTONS_UPDATE = max_upd
-        logging.info(f"✅ Загружено кнопок: {len(DYNAMIC_LIST)} (динамических: {len(DYNAMIC_BUTTONS)})")
+        
+        logging.info(f"✅ Загружено кнопок: {len(DYNAMIC_LIST)}")
     except Error as e:
         logging.error(f"❌ Ошибка кнопок: {e}")
 
@@ -237,21 +241,22 @@ def check_buttons_updated():
 def get_main_keyboard(user_id=None):
     builder = ReplyKeyboardBuilder()
     for text in DYNAMIC_LIST:
+        # Кнопка "Рассылка" только для админа
         if text == MAILING_BUTTON_TEXT and user_id != ADMIN_ID:
             continue
         builder.add(types.KeyboardButton(text=text))
-    if builder.buttons:  # если есть кнопки
+    
+    if builder.buttons:
         builder.adjust(2)
         return builder.as_markup(resize_keyboard=True)
     else:
-        # если нет кнопок – вернуть пустую клавиатуру (или None)
         return types.ReplyKeyboardRemove()
 
 def get_calc_type_keyboard():
     builder = InlineKeyboardBuilder()
     builder.button(text="🏕 Беседка", callback_data="calc_type_gazebo")
     builder.button(text="🛁 Баня / Летний домик", callback_data="calc_type_bath")
-    builder.button(text="🏠 Дом ПП (28 диаметр)", callback_data="calc_type_house")
+    builder.button(text="🏠 Дом", callback_data="calc_type_house")
     builder.adjust(1)
     return builder.as_markup()
 
@@ -279,10 +284,10 @@ async def check_delayed_media_messages(bot: Bot):
             mysql_conn = mysql.connector.connect(**MYSQL_CONFIG)
             mysql_cur = mysql_conn.cursor(dictionary=True)
             mysql_cur.execute("""
-                SELECT id, message_text, delay_hours, image_url
-                FROM delayed_messages
-                WHERE bot_id = 1 AND is_active = 1
-            """)
+    SELECT id, message_text, delay_hours, delay_unit, image_url, inline_enabled, inline_text, inline_url
+    FROM delayed_messages
+    WHERE bot_id = 1 AND is_active = 1
+""")
             delayed_list = mysql_cur.fetchall()
             mysql_cur.close()
             mysql_conn.close()
@@ -301,39 +306,69 @@ async def check_delayed_media_messages(bot: Bot):
                     continue
 
                 for msg in delayed_list:
-                    send_time = join_date + timedelta(minutes=msg['delay_hours'])
+                    # Получаем все поля сообщения
+                    msg_id = msg['id']
+                    caption = clean_html_for_telegram(msg.get('message_text') or "")
+                    message_text = caption
+                    delay_value = msg.get('delay_hours', 24)  # числовое значение
+                    delay_unit = msg.get('delay_unit', 'hours')  # единица измерения
+                    image_url = msg.get('image_url')
+                    inline_enabled = msg.get('inline_enabled', 0)
+                    inline_text = msg.get('inline_text')
+                    inline_url = msg.get('inline_url')
+
+                    # Вычисляем время отправки в зависимости от единицы
+                    if delay_unit == 'minutes':
+                        delta = timedelta(minutes=delay_value)
+                    elif delay_unit == 'days':
+                        delta = timedelta(days=delay_value)
+                    else:  # 'hours' по умолчанию
+                        delta = timedelta(hours=delay_value)
+
+                    send_time = join_date + delta
 
                     if now >= send_time:
-                        # Вычисляем хеш содержимого
+                        # Вычисляем хеш содержимого (без изменений)
                         msg_hash = get_message_hash(msg)
-                        # Проверяем по хешу (не по ID)
+                        
+                        # Проверяем по хешу
                         sqlite_cur.execute(
                             "SELECT 1 FROM user_delayed_status WHERE user_id = ? AND content_hash = ?",
                             (user_id, msg_hash)
                         )
                         if sqlite_cur.fetchone():
-                            # Уже отправляли такое сообщение
                             continue
 
-                        caption = msg.get('message_text') or ""
+                        caption = message_text or ""
                         sent_success = False
-                        image = msg.get('image_url')
+
+                        # Создаем инлайн-клавиатуру, если нужно
+                        inline_markup = None
+                        if inline_enabled and inline_text and inline_url:
+                            builder = InlineKeyboardBuilder()
+                            builder.button(text=inline_text, url=inline_url)
+                            inline_markup = builder.as_markup()
 
                         try:
-                            if image and isinstance(image, str) and image.strip():
-                                image = image.strip()
-                                if image.startswith(('http://', 'https://')):
-                                    await bot.send_photo(user_id, image, caption=caption, parse_mode="HTML")
-                                    sent_success = True
-                                else:
-                                    # Локальный файл (если нужно)
-                                    # ... ваш код для локальных файлов
-                                    pass
+                            if image_url and image_url.strip() and image_url.startswith(('http://', 'https://')):
+                                await bot.send_photo(
+                                    user_id, 
+                                    image_url, 
+                                    caption=caption, 
+                                    parse_mode="HTML", 
+                                    reply_markup=inline_markup
+                                )
+                                sent_success = True
                             else:
-                                await bot.send_message(user_id, caption, parse_mode="HTML")
+                                await bot.send_message(
+                                    user_id, 
+                                    caption, 
+                                    parse_mode="HTML", 
+                                    reply_markup=inline_markup
+                                )
                                 sent_success = True
                         except Exception as e:
-                            logging.error(f"Ошибка отправки delayed #{msg['id']} пользователю {user_id}: {e}")
+                            logging.error(f"Ошибка отправки delayed #{msg_id} пользователю {user_id}: {e}")
                             if "chat not found" in str(e).lower() or "bot was blocked" in str(e).lower():
                                 sqlite_cur.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
                                 sqlite_conn.commit()
@@ -343,10 +378,10 @@ async def check_delayed_media_messages(bot: Bot):
                         if sent_success:
                             sqlite_cur.execute(
                                 "INSERT INTO user_delayed_status (user_id, delayed_id, content_hash, sent_at) VALUES (?, ?, ?, ?)",
-                                (user_id, msg['id'], msg_hash, now)
+                                (user_id, msg_id, msg_hash, now)
                             )
                             sqlite_conn.commit()
-                            logging.info(f"✅ Delayed #{msg['id']} отправлено пользователю {user_id}")
+                            logging.info(f"✅ Delayed #{msg_id} отправлено пользователю {user_id}")
 
             sqlite_cur.close()
             sqlite_conn.close()
@@ -416,25 +451,41 @@ async def process_mailing(bot: Bot, mailing_id: int, msg_data: dict):
     for (user_id,) in users:
         try:
             content_type = msg_data['content_type']
+            
             if content_type == 'text':
-                await bot.send_message(user_id, msg_data['text'], parse_mode="HTML")
+                clean_text = clean_html_for_telegram(msg_data['text'])
+                await bot.send_message(user_id, clean_text, parse_mode="HTML")
+                
             elif content_type == 'photo':
-                await bot.send_photo(user_id, msg_data['file_id'], caption=msg_data.get('caption', ''), parse_mode="HTML")
+                clean_caption = clean_html_for_telegram(msg_data.get('caption', ''))
+                await bot.send_photo(user_id, msg_data['file_id'], caption=clean_caption, parse_mode="HTML")
+                
             elif content_type == 'video':
-                await bot.send_video(user_id, msg_data['file_id'], caption=msg_data.get('caption', ''), parse_mode="HTML")
+                clean_caption = clean_html_for_telegram(msg_data.get('caption', ''))
+                await bot.send_video(user_id, msg_data['file_id'], caption=clean_caption, parse_mode="HTML")
+                
             elif content_type == 'document':
-                await bot.send_document(user_id, msg_data['file_id'], caption=msg_data.get('caption', ''), parse_mode="HTML")
+                clean_caption = clean_html_for_telegram(msg_data.get('caption', ''))
+                await bot.send_document(user_id, msg_data['file_id'], caption=clean_caption, parse_mode="HTML")
+                
             elif content_type == 'audio':
-                await bot.send_audio(user_id, msg_data['file_id'], caption=msg_data.get('caption', ''), parse_mode="HTML")
+                clean_caption = clean_html_for_telegram(msg_data.get('caption', ''))
+                await bot.send_audio(user_id, msg_data['file_id'], caption=clean_caption, parse_mode="HTML")
+                
             elif content_type == 'voice':
-                await bot.send_voice(user_id, msg_data['file_id'], caption=msg_data.get('caption', ''), parse_mode="HTML")
+                clean_caption = clean_html_for_telegram(msg_data.get('caption', ''))
+                await bot.send_voice(user_id, msg_data['file_id'], caption=clean_caption, parse_mode="HTML")
+                
             elif content_type == 'video_note':
                 await bot.send_video_note(user_id, msg_data['file_id'])
+                
             else:
                 logging.warning(f"Неизвестный тип {content_type}")
                 continue
+                
             success_count += 1
             await asyncio.sleep(0.05)
+            
         except Exception as e:
             logging.warning(f"Ошибка отправки {user_id}: {e}")
             fail_count += 1
@@ -479,13 +530,12 @@ async def send_previews_to_admin(bot: Bot):
                 sqlite_cur.execute("SELECT 1 FROM preview_sent WHERE message_id = ?", (msg['id'],))
                 if sqlite_cur.fetchone():
                     continue  # уже отправляли
-
-                # Формируем текст предпросмотра
+                clean_text = clean_html_for_telegram(msg['message_text'])
                 preview_text = (
-                    f"📨 **Новое отложенное сообщение**\n\n"
-                    f"**Текст:** {msg['message_text']}\n"
-                    f"**Задержка:** {msg['delay_hours']} ч\n"
-                    f"**Изображение:** {msg['image_url'] or 'нет'}"
+                    f"📨 Новое отложенное сообщение\n\n"
+                    f"Текст:{clean_text}\n"
+                    f"Задержка: {msg['delay_hours']} ч\n"
+                    f"Изображение: {msg['image_url'] or 'нет'}"
                 )
                 # Кнопки
                 kb = InlineKeyboardBuilder()
@@ -1010,6 +1060,7 @@ def register_handlers(dp: Dispatcher, bot: Bot):
         norm = normalize(message.text)
         uid = message.from_user.id
 
+        # Системные кнопки
         if message.text == CONTACT_BUTTON_TEXT:
             await state.set_state(ContactState.waiting_for_message)
             await message.answer(MESSAGES.get("contact_prompt", "Напишите сообщение менеджеру:"), reply_markup=get_main_keyboard(uid))
@@ -1025,12 +1076,32 @@ def register_handlers(dp: Dispatcher, bot: Bot):
             await message.answer("Выберите тип постройки:", reply_markup=get_calc_type_keyboard())
             return
 
+        # ⭐ ЗДЕСЬ НОВЫЙ БЛОК С ПРОВЕРКОЙ MESSAGE_KEY ⭐
         if norm in DYNAMIC_BUTTONS:
-            await message.answer(DYNAMIC_BUTTONS[norm], parse_mode="HTML", reply_markup=get_main_keyboard(uid))
+            # Получаем данные кнопки из BUTTON_TEXT_MAP
+            btn_data = BUTTON_TEXT_MAP.get(norm)
+            
+            if btn_data and btn_data.get('key') == 'catalog':
+                # Для каталога добавляем хардкодные инлайн-кнопки
+                builder = InlineKeyboardBuilder()
+                builder.button(text="🏡 Дома из бревна", url="https://drev.house/katalog-proektov/doma-iz-brevna")
+                builder.button(text="🛖 Бани", url="https://drev.house/katalog-proektov/katalog-bani-iz-brevna-22-24-diametra-ot-pryamogo-proizvoditelya")
+                builder.button(text="🛖 Беседки", url="https://drev.house/katalog-proektov/proizvodstvo-besedok-iz-brevna")
+                builder.button(text="🧱 Дома из блоков", url="https://drev.house/katalog-proektov/doma-iz-blokov")
+                builder.adjust(1)
+                
+                clean_text = clean_html_for_telegram(DYNAMIC_BUTTONS[norm])
+                await message.answer(clean_text, parse_mode="HTML", reply_markup=builder.as_markup())
+            
+            else:
+                # Для всех остальных кнопок – просто текст
+                clean_text = clean_html_for_telegram(DYNAMIC_BUTTONS[norm])
+                await message.answer(clean_text, parse_mode="HTML", reply_markup=get_main_keyboard(uid))
+            
             return
 
+        # Если ни одно условие не подошло
         await message.answer("Неизвестная команда. Используйте кнопки ниже.", reply_markup=get_main_keyboard(uid))
-
 # =========================
 # ЗАПУСК
 # =========================
