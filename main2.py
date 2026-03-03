@@ -263,6 +263,7 @@ def get_calc_type_keyboard():
 
 def get_calc_new_keyboard():
     builder = InlineKeyboardBuilder()
+    builder.button(text="👷 Написать прорабу", url="https://t.me/drev_house")
     builder.button(text="🔄 Новый расчет", callback_data="calc_new")
     builder.button(text="🏠 В меню", callback_data="calc_to_menu")
     builder.adjust(1)
@@ -311,7 +312,7 @@ async def check_delayed_media_messages(bot: Bot):
                     caption = clean_html_for_telegram(msg.get('message_text') or "")
                     message_text = caption
                     delay_value = msg.get('delay_hours', 24)  # числовое значение
-                    delay_unit = msg.get('delay_unit', 'hours')  # единица измерения
+                    delay_unit = msg.get('delay_unit', '')  # единица измерения
                     image_url = msg.get('image_url')
                     inline_enabled = msg.get('inline_enabled', 0)
                     inline_text = msg.get('inline_text')
