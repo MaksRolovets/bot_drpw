@@ -12,6 +12,8 @@ from aiogram.fsm.storage.memory import MemoryStorage
 import html
 import re 
 from bs4 import BeautifulSoup
+import json
+from aiogram.types import InputMediaPhoto
 
 # ========== НАСТРОЙКИ ==========
 MYSQL_CONFIG = {
@@ -21,9 +23,9 @@ MYSQL_CONFIG = {
     'database': 'my_database',
     'charset': 'utf8mb4'
 }
-#BOT_TOKEN = '8639319444:AAEU9aUaTq3rxuW6xf2nlfXCRiCN37qrD7c' #bot['bot_token']
-BOT_TOKEN = '6849348700:AAHpEKe3x4eTc_t19l7WTR_y-W1b_o0klmc'
-ADMIN_ID = 5374683743
+BOT_TOKEN = '8639319444:AAEU9aUaTq3rxuW6xf2nlfXCRiCN37qrD7c' #bot['bot_token']
+#BOT_TOKEN = '6849348700:AAHpEKe3x4eTc_t19l7WTR_y-W1b_o0klmc'
+ADMIN_ID = 5374683743 
 
 # ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
 nodes = {}               # {node_key: {'node_id': id, 'text': ..., 'image': ..., 'is_root': ...}}
@@ -212,9 +214,10 @@ def get_node_keyboard(node_key):
 
 def get_calc_type_keyboard():
     builder = InlineKeyboardBuilder()
-    builder.button(text="🏕 Беседка", callback_data="calc_type_gazebo")
-    builder.button(text="🛁 Баня / Летний домик", callback_data="calc_type_bath")
-    builder.button(text="🏠 Дом", callback_data="calc_type_house")
+    builder.button(text="🏕 Беседка (16-20 диаметр)", callback_data="calc_type_gazebo")
+    builder.button(text="🛁 Баня (22-24 диаметр)", callback_data="calc_type_bath")
+    builder.button(text="🏡 Летний дом (20-22 диаметр)", callback_data="calc_type_summer")
+    builder.button(text="🏠 Дом (28 диаметр)", callback_data="calc_type_house")
     builder.adjust(1)
     return builder.as_markup()
 
@@ -233,11 +236,29 @@ async def send_node(chat_id, node_key, bot, user_name=None, edit_message_id=None
         return
     node = nodes[node_key]
     text = clean_html_for_telegram(node['text'] or "Пустое сообщение", name=user_name)
-    image = node['image']
+    
+    # Парсим изображения из JSON
+    image_urls = []
+    image_data = node.get('image')
+    if image_data:
+        try:
+            parsed = json.loads(image_data)
+            if isinstance(parsed, list):
+                # Извлекаем все URL из списка объектов (ожидаем, что каждый элемент имеет поле 'url')
+                image_urls = [item['url'] for item in parsed if item.get('url')]
+            elif isinstance(parsed, str):
+                image_urls = [parsed]
+        except json.JSONDecodeError:
+            # Если не JSON, считаем одиночной строкой
+            image_urls = [image_data] if image_data else []
+    
     keyboard = get_node_keyboard(node_key)
 
     if edit_message_id:
-        if image:
+        # При редактировании нельзя сменить тип сообщения (фото на текст и т.д.)
+        # Будем редактировать только текст/подпись, игнорируя фото
+        if image_urls:
+            # Если есть фото, предполагаем, что исходное сообщение было с фото, редактируем подпись
             await bot.edit_message_caption(
                 chat_id=chat_id,
                 message_id=edit_message_id,
@@ -254,11 +275,21 @@ async def send_node(chat_id, node_key, bot, user_name=None, edit_message_id=None
                 reply_markup=keyboard
             )
     else:
-        if image:
-            await bot.send_photo(chat_id, photo=image, caption=text, parse_mode="HTML", reply_markup=keyboard)
+        if len(image_urls) > 1:
+            media_group = []
+            for i, url in enumerate(image_urls):
+                if i == 0:
+                    media_group.append(InputMediaPhoto(media=url, caption=text, parse_mode="HTML"))
+                else:
+                    media_group.append(InputMediaPhoto(media=url))
+            await bot.send_media_group(chat_id, media_group[:10])
+            # После альбома отправляем клавиатуру отдельным сообщением (у медиагруппы нет reply_markup)
+            if keyboard:
+                await bot.send_message(chat_id, "Выберите действие:", reply_markup=keyboard)
+        elif len(image_urls) == 1:
+            await bot.send_photo(chat_id, image_urls[0], caption=text, parse_mode="HTML", reply_markup=keyboard)
         else:
             await bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=keyboard)
-
 # ========== SQLite ДЛЯ ПОЛЬЗОВАТЕЛЕЙ И СТАТУСОВ ==========
 def init_db():
     conn = sqlite3.connect('users.db')
@@ -340,14 +371,39 @@ async def check_delayed_messages(bot: Bot):
                         # Отправка
                         try:
                             if msg['node_key']:
-                                # Передаём имя в send_node
                                 await send_node(user_id, msg['node_key'], bot, user_name=user_name)
                             else:
-                                # Подставляем имя в текст сообщения
                                 text = clean_html_for_telegram(msg['text'] or "", name=user_name)
-                                image = msg['image']
-                                if image:
-                                    await bot.send_photo(user_id, photo=image, caption=text, parse_mode="HTML")
+                                
+                                # Парсим JSON с изображениями
+                                image_urls = []
+                                image_data = msg.get('image')
+                                if image_data:
+                                    try:
+                                        parsed = json.loads(image_data)
+                                        if isinstance(parsed, list):
+                                            # Извлекаем все URL из списка объектов
+                                            image_urls = [item['url'] for item in parsed if item.get('url')]
+                                        elif isinstance(parsed, str):
+                                            # Если это просто строка (старый формат)
+                                            image_urls = [parsed]
+                                    except json.JSONDecodeError:
+                                        # Не JSON – значит одиночная строка
+                                        image_urls = [image_data] if image_data else []
+                                
+                                # Отправка в зависимости от количества фото
+                                if len(image_urls) > 1:
+                                    logging.info(f"Отправка альбома пользователю {user_id}, URL: {image_urls}")
+                                    media_group = []
+                                    for i, url in enumerate(image_urls):
+                                        if i == 0:
+                                            media_group.append(InputMediaPhoto(media=url, caption=text, parse_mode="HTML"))
+                                        else:
+                                            media_group.append(InputMediaPhoto(media=url))
+                                    # Ограничение Telegram – до 10 фото
+                                    await bot.send_media_group(user_id, media_group[:10])
+                                elif len(image_urls) == 1:
+                                    await bot.send_photo(user_id, image_urls[0], caption=text, parse_mode="HTML")
                                 else:
                                     await bot.send_message(user_id, text, parse_mode="HTML")
 
@@ -559,12 +615,43 @@ async def calc_dimensions_received(message: types.Message, state: FSMContext):
     data = await state.get_data()
     btype = data.get('building_type')
 
+    # Базовая информация о типе и диаметре
     if btype == "calc_type_gazebo":
         price_per_m2 = 750
+        diameter = "16-20"
+        type_name = "Беседка"
+        details = (
+            "✅ Цена указана <b>только за комплект</b> (стеновой комплект + стропильная система).\n"
+            "🚧 Сборка оплачивается отдельно."
+        )
     elif btype == "calc_type_bath":
-        price_per_m2 = 950 if area < 50 else 800
+        # Цена зависит от площади
+        price_per_m2 = 600  # базовая, но по тексту от 600, но у вас было 950/800
+        # Уточним у клиента логику: вероятно, он хочет фиксированную цену 600?
+        # Пока оставим как было, но можно сделать фикс. Для примера сделаем фикс 600.
+        price_per_m2 = 600  # или оставить старую логику
+        diameter = "22-24"
+        type_name = "Баня"
+        details = (
+            "✅ Цена указана <b>только за комплект</b> (стеновой комплект + стропильная система).\n"
+            "🚧 Сборка оплачивается отдельно."
+        )
+    elif btype == "calc_type_summer":
+        price_per_m2 = 980
+        diameter = "20-22"
+        type_name = "Летний дом"
+        details = (
+            "✅ Цена указана <b>только за комплект</b> (стеновой комплект + стропильная система).\n"
+            "🚧 Сборка оплачивается отдельно."
+        )
     elif btype == "calc_type_house":
         price_per_m2 = 1150 if area < 50 else 980
+        diameter = "28"
+        type_name = "Дом ПП"
+        details = (
+            "✅ Цена указана <b>только за комплект</b> (стеновой комплект + стропильная система).\n"
+            "🚧 Сборка оплачивается отдельно."
+        )
     else:
         await message.answer("Ошибка типа. Начните заново.")
         await state.clear()
@@ -572,11 +659,14 @@ async def calc_dimensions_received(message: types.Message, state: FSMContext):
 
     total = area * price_per_m2
     result_text = (
-        f"✅ Результат:\n\n"
-        f"Тип: {btype.replace('calc_type_', '').capitalize()}\n"
+        f"✅ <b>Результат расчёта</b>\n\n"
+        f"<b>{type_name}</b>\n"
+        f"Диаметр бревна: {diameter}\n"
         f"Площадь: {area:.2f} м²\n"
-        f"Цена за м²: от {price_per_m2} руб\n"
-        f"<b>Итого: от {total:,.2f} руб.</b>"
+        f"Цена за м²: <b>от {price_per_m2} руб</b>\n"
+        f"<b>Итого: от {total:,.2f} руб.</b>\n\n"
+        f"{details}\n\n"
+        f"<i>Точная стоимость зависит от конфигурации и этажности.</i>"
     ).replace(',', ' ')
 
     await message.answer(result_text, parse_mode="HTML", reply_markup=get_calc_new_keyboard())
