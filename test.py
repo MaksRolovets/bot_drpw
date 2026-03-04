@@ -198,12 +198,12 @@ def get_calc_new_keyboard():
     return builder.as_markup()
 
 # ========== ОТПРАВКА УЗЛА (С РЕДАКТИРОВАНИЕМ) ==========
-async def send_node(chat_id, node_key, bot, edit_message_id=None):
+async def send_node(chat_id, node_key, bot, user_name=None, edit_message_id=None):
     if node_key not in nodes:
         await bot.send_message(chat_id, "Узел не найден")
         return
     node = nodes[node_key]
-    text = clean_html_for_telegram(node['text'] or "Пустое сообщение")
+    text = clean_html_for_telegram(node['text'] or "Пустое сообщение", name=user_name)
     image = node['image']
     keyboard = get_node_keyboard(node_key)
 
@@ -285,11 +285,12 @@ async def check_delayed_messages(bot: Bot):
         try:
             conn_sqlite = sqlite3.connect('users.db')
             cursor_sqlite = conn_sqlite.cursor()
-            cursor_sqlite.execute("SELECT user_id, join_date FROM users")
+            # Получаем также first_name для подстановки
+            cursor_sqlite.execute("SELECT user_id, first_name, join_date FROM users")
             users = cursor_sqlite.fetchall()
             now = datetime.now()
 
-            for user_id, join_str in users:
+            for user_id, user_name, join_str in users:
                 try:
                     join_date = datetime.fromisoformat(join_str)
                 except:
@@ -310,9 +311,11 @@ async def check_delayed_messages(bot: Bot):
                         # Отправка
                         try:
                             if msg['node_key']:
-                                await send_node(user_id, msg['node_key'], bot)
+                                # Передаём имя в send_node
+                                await send_node(user_id, msg['node_key'], bot, user_name=user_name)
                             else:
-                                text = clean_html_for_telegram(msg['text'] or "")
+                                # Подставляем имя в текст сообщения
+                                text = clean_html_for_telegram(msg['text'] or "", name=user_name)
                                 image = msg['image']
                                 if image:
                                     await bot.send_photo(user_id, photo=image, caption=text, parse_mode="HTML")
@@ -399,7 +402,7 @@ async def cmd_start(message: types.Message):
         await message.answer("❌ Корневой узел не настроен")
         return
 
-    await send_node(message.chat.id, root_key, message.bot)
+    await send_node(message.chat.id, root_key, message.bot, user_name=message.from_user.first_name)
     await message.answer(
         "Выберите раздел:",
         reply_markup=get_main_keyboard(message.from_user.id)
@@ -411,7 +414,9 @@ async def cmd_start(message: types.Message):
 @dp.callback_query(F.data.startswith("node:"))
 async def node_callback(callback: types.CallbackQuery):
     node_key = callback.data.split(":")[1]
-    await send_node(callback.message.chat.id, node_key, callback.bot, edit_message_id=callback.message.message_id)
+    await send_node(callback.message.chat.id, node_key, callback.bot,
+                user_name=callback.from_user.first_name,
+                edit_message_id=callback.message.message_id)
     await callback.answer()
 
 # ---------- Подтверждение/отмена отложенных ----------
@@ -838,16 +843,21 @@ async def handle_reply_buttons(message: types.Message, state: FSMContext):
 
     btn = reply_buttons[norm]
     if btn['node_key']:
-        await send_node(message.chat.id, btn['node_key'], message.bot)  # без edit_message_id
-        return    
+        await send_node(message.chat.id, btn['node_key'], message.bot, user_name=message.from_user.first_name)
     elif btn['message_key']:
-        # Обработка специальных ключей (например, каталог с инлайн-кнопками)
         response = btn['response'] or "Раздел в разработке."
-        await message.answer(clean_html_for_telegram(response), parse_mode="HTML", reply_markup=get_main_keyboard(uid))
+        await message.answer(
+            clean_html_for_telegram(response, name=message.from_user.first_name),
+            parse_mode="HTML",
+            reply_markup=get_main_keyboard(uid)
+        )
     else:
         response = btn['response'] or "Пустой ответ"
-        await message.answer(clean_html_for_telegram(response), parse_mode="HTML", reply_markup=get_main_keyboard(uid))
-# ---------- Запуск ----------
+        await message.answer(
+            clean_html_for_telegram(response, name=message.from_user.first_name),
+            parse_mode="HTML",
+            reply_markup=get_main_keyboard(uid)
+        )# ---------- Запуск ----------
 async def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     init_db()
