@@ -20,7 +20,8 @@ MYSQL_CONFIG = {
     'database': 'my_database',
     'charset': 'utf8mb4'
 }
-BOT_TOKEN = '8639319444:AAEU9aUaTq3rxuW6xf2nlfXCRiCN37qrD7c'
+BOT_TOKEN = '8639319444:AAEU9aUaTq3rxuW6xf2nlfXCRiCN37qrD7c' #bot['bot_token']
+#BOT_TOKEN = '6849348700:AAHpEKe3x4eTc_t19l7WTR_y-W1b_o0klmc'
 ADMIN_ID = 5374683743
 
 # ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
@@ -62,8 +63,17 @@ def clean_html_for_telegram(text, name=None):
     if name:
         text = text.replace('{name}', name)
     text = html.unescape(text)
+    
+    # Заменяем <br> и <p> на временные маркеры переноса строки
+    text = text.replace('<br>', '\n').replace('<br/>', '\n').replace('<br />', '\n')
+    # Закрывающие теги </p> тоже заменяем на перенос
+    text = text.replace('</p>', '\n')
+    # Открывающие <p> просто удаляем (без переноса, чтобы не было лишних пустых строк)
+    text = text.replace('<p>', '')
+    
     soup = BeautifulSoup(text, 'html.parser')
     allowed_tags = {'b', 'strong', 'i', 'em', 'u', 'ins', 's', 'strike', 'del', 'a', 'code', 'pre'}
+    
     for tag in soup.find_all():
         if tag.name not in allowed_tags:
             tag.unwrap()
@@ -75,7 +85,14 @@ def clean_html_for_telegram(text, name=None):
                     tag['href'] = href
             else:
                 tag.attrs = {}
-    return str(soup)
+    
+    result = str(soup)
+    
+    # Очищаем лишние переносы (не больше двух подряд)
+    import re
+    result = re.sub(r'\n{3,}', '\n\n', result)
+    
+    return result.strip()
 
 # ========== ЗАГРУЗКА ДАННЫХ ==========
 def load_all_data():
