@@ -10,6 +10,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 import html
+import re 
 from bs4 import BeautifulSoup
 
 # ========== НАСТРОЙКИ ==========
@@ -20,8 +21,8 @@ MYSQL_CONFIG = {
     'database': 'my_database',
     'charset': 'utf8mb4'
 }
-BOT_TOKEN = '8639319444:AAEU9aUaTq3rxuW6xf2nlfXCRiCN37qrD7c' #bot['bot_token']
-#BOT_TOKEN = '6849348700:AAHpEKe3x4eTc_t19l7WTR_y-W1b_o0klmc'
+#BOT_TOKEN = '8639319444:AAEU9aUaTq3rxuW6xf2nlfXCRiCN37qrD7c' #bot['bot_token']
+BOT_TOKEN = '6849348700:AAHpEKe3x4eTc_t19l7WTR_y-W1b_o0klmc'
 ADMIN_ID = 5374683743
 
 # ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
@@ -60,40 +61,51 @@ def normalize(text: str) -> str:
 def clean_html_for_telegram(text, name=None):
     if not text:
         return text
+
     if name:
         text = text.replace('{name}', name)
+
     text = html.unescape(text)
-    
-    # Заменяем <br> и <p> на временные маркеры переноса строки
-    text = text.replace('<br>', '\n').replace('<br/>', '\n').replace('<br />', '\n')
-    # Закрывающие теги </p> тоже заменяем на перенос
-    text = text.replace('</p>', '\n')
-    # Открывающие <p> просто удаляем (без переноса, чтобы не было лишних пустых строк)
-    text = text.replace('<p>', '')
-    
-    soup = BeautifulSoup(text, 'html.parser')
-    allowed_tags = {'b', 'strong', 'i', 'em', 'u', 'ins', 's', 'strike', 'del', 'a', 'code', 'pre'}
-    
-    for tag in soup.find_all():
-        if tag.name not in allowed_tags:
+    soup = BeautifulSoup(text, "html.parser")
+
+    allowed_tags = {"b", "strong", "i", "em", "u", "a"}
+
+    # <br> заменяем на перенос строки
+    for br in soup.find_all("br"):
+        br.replace_with("\n")
+
+    for tag in soup.find_all(True):
+        if tag.name not in allowed_tags and tag.name != "p":
             tag.unwrap()
         else:
-            if tag.name == 'a':
-                href = tag.get('href')
+            if tag.name == "a":
+                href = tag.get("href")
                 tag.attrs = {}
                 if href:
-                    tag['href'] = href
+                    tag["href"] = href
             else:
                 tag.attrs = {}
-    
-    result = str(soup)
-    
-    # Очищаем лишние переносы (не больше двух подряд)
-    import re
-    result = re.sub(r'\n{3,}', '\n\n', result)
-    
-    return result.strip()
 
+    blocks = []
+
+    for p in soup.find_all("p"):
+        inner = "".join(str(x) for x in p.contents).strip()
+
+        check_text = BeautifulSoup(inner, "html.parser").get_text().strip()
+        if not check_text or check_text.replace("\xa0", "").strip() == "":
+            continue
+
+        blocks.append(inner)
+
+    if blocks:
+        cleaned = "\n\n".join(blocks)
+    else:
+        cleaned = str(soup)
+
+    cleaned = cleaned.replace("\xa0", " ")
+    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+
+    return cleaned.strip()
 # ========== ЗАГРУЗКА ДАННЫХ ==========
 def load_all_data():
     global nodes, buttons_by_node, reply_buttons, reply_button_texts, delayed_messages
@@ -371,7 +383,7 @@ async def send_previews_to_admin(bot: Bot):
 
                 preview_text = (
                     f"📨 **Новое отложенное сообщение**\n\n"
-                    f"**Текст:** {msg['text'][:100]}...\n"
+                    f"**Текст:** {clean_html_for_telegram(msg['text'][:200])}...\n"
                     f"**Задержка:** {msg['delay_hours']} {msg['delay_unit']}\n"
                     f"**Изображение:** {msg['image'] or 'нет'}\n"
                     f"**Ключ узла:** {msg['node_key'] or 'нет'}"
@@ -421,7 +433,7 @@ async def cmd_start(message: types.Message):
 
     await send_node(message.chat.id, root_key, message.bot, user_name=message.from_user.first_name)
     await message.answer(
-        "Выберите раздел:",
+        "Для удобства смотрите меню 👇",
         reply_markup=get_main_keyboard(message.from_user.id)
     )
 
@@ -889,3 +901,5 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+
