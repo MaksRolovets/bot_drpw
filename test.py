@@ -214,10 +214,10 @@ def get_node_keyboard(node_key):
 
 def get_calc_type_keyboard():
     builder = InlineKeyboardBuilder()
-    builder.button(text="🏕 Беседка (16-20 диаметр)", callback_data="calc_type_gazebo")
-    builder.button(text="🛁 Баня (22-24 диаметр)", callback_data="calc_type_bath")
-    builder.button(text="🏡 Летний дом (20-22 диаметр)", callback_data="calc_type_summer")
-    builder.button(text="🏠 Дом (28 диаметр)", callback_data="calc_type_house")
+    builder.button(text="🏕 Беседка", callback_data="calc_type_gazebo")
+    builder.button(text="🛁 Баня", callback_data="calc_type_bath")
+    builder.button(text="🏡 Летний дом", callback_data="calc_type_summer")
+    builder.button(text="🏠 Дом для жизни", callback_data="calc_type_house")
     builder.adjust(1)
     return builder.as_markup()
 
