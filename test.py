@@ -23,11 +23,12 @@ MYSQL_CONFIG = {
     'database': 'my_database',
     'charset': 'utf8mb4'
 }
-#BOT_TOKEN = '8639319444:AAEU9aUaTq3rxuW6xf2nlfXCRiCN37qrD7c' #bot['bot_token']
-BOT_TOKEN = '6849348700:AAHpEKe3x4eTc_t19l7WTR_y-W1b_o0klmc'
-ADMIN_ID = 2109578014#5374683743#2109578014  
+BOT_TOKEN = '8639319444:AAEU9aUaTq3rxuW6xf2nlfXCRiCN37qrD7c' #bot['bot_token']
+#BOT_TOKEN = '6849348700:AAHpEKe3x4eTc_t19l7WTR_y-W1b_o0klmc'
+ADMIN_ID = 5374683743
 
 # ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
+BASE_IMAGE_URL = "https://horrifyingly-enchanted-bandicoot.cloudpub.ru/"
 nodes = {}               # {node_key: {'node_id': id, 'text': ..., 'image': ..., 'is_root': ...}}
 buttons_by_node = {}     # {node_id: [{'text': ..., 'type': ..., 'target': ...}]}
 reply_buttons = {}       # {normalized_text: {'response': ..., 'node_key': ..., 'message_key': ...}}
@@ -57,6 +58,19 @@ class ManagerReplyStates(StatesGroup):
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 
 import hashlib
+
+def get_absolute_image_url(relative_url):
+    """Преобразует относительный путь в полный URL с BASE_IMAGE_URL."""
+    if not relative_url:
+        return None
+    if relative_url.startswith(('http://', 'https://')):
+        return relative_url
+    # Убираем префикс 'image/' если он есть
+    if relative_url.startswith('image/'):
+        relative_url = relative_url[6:]  # удаляем первые 6 символов
+    # Убираем ведущий слеш, если есть
+    relative_url = relative_url.lstrip('/')
+    return BASE_IMAGE_URL + relative_url
 
 def get_message_hash(msg):
     """Возвращает MD5-хеш содержимого отложенного сообщения."""
@@ -275,13 +289,13 @@ async def send_node(chat_id, node_key, bot, user_name=None, edit_message_id=None
         try:
             parsed = json.loads(image_data)
             if isinstance(parsed, list):
-                # Извлекаем все URL из списка объектов (ожидаем, что каждый элемент имеет поле 'url')
-                image_urls = [item['url'] for item in parsed if item.get('url')]
+                # Применяем get_absolute_image_url к каждому URL
+                image_urls = [get_absolute_image_url(item['url']) for item in parsed if item.get('url')]
             elif isinstance(parsed, str):
-                image_urls = [parsed]
+                image_urls = [get_absolute_image_url(parsed)]
         except json.JSONDecodeError:
             # Если не JSON, считаем одиночной строкой
-            image_urls = [image_data] if image_data else []
+            image_urls = [get_absolute_image_url(image_data)] if image_data else []
     
     keyboard = get_node_keyboard(node_key)
 
@@ -320,8 +334,7 @@ async def send_node(chat_id, node_key, bot, user_name=None, edit_message_id=None
         elif len(image_urls) == 1:
             await bot.send_photo(chat_id, image_urls[0], caption=text, parse_mode="HTML", reply_markup=keyboard)
         else:
-            await bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=keyboard)
-# ========== SQLite ДЛЯ ПОЛЬЗОВАТЕЛЕЙ И СТАТУСОВ ==========
+            await bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=keyboard)# ========== SQLite ДЛЯ ПОЛЬЗОВАТЕЛЕЙ И СТАТУСОВ ==========
 def init_db():
     conn = sqlite3.connect('users.db')
     cursor = conn.cursor()
@@ -407,17 +420,18 @@ async def check_delayed_messages(bot: Bot):
                             else:
                                 text = clean_html_for_telegram(msg['text'] or "", name=user_name)
                                 # Парсим JSON с изображениями
+                                image_data = msg.get('image')
                                 image_urls = []
                                 image_data = msg.get('image')
                                 if image_data:
                                     try:
                                         parsed = json.loads(image_data)
                                         if isinstance(parsed, list):
-                                            image_urls = [item['url'] for item in parsed if item.get('url')]
+                                            image_urls = [get_absolute_image_url(item['url']) for item in parsed if item.get('url')]
                                         elif isinstance(parsed, str):
-                                            image_urls = [parsed]
+                                            image_urls = [get_absolute_image_url(parsed)]
                                     except json.JSONDecodeError:
-                                        image_urls = [image_data] if image_data else []
+                                        image_urls = [get_absolute_image_url(image_data)] if image_data else []
                                 
                                 if len(image_urls) > 1:
                                     media_group = []
@@ -479,7 +493,7 @@ async def send_previews_to_admin(bot: Bot):
 
                 preview_text = (
                     f"📨 Новое отложенное сообщение\n\n"
-                    f"{preview_text_content[:200]}...\n"
+                    f"{preview_text_content}\n"
                     f"📎 Всего изображений: {len(json.loads(msg['image'])) if msg['image'] else 0}"
                 )
 
@@ -489,9 +503,11 @@ async def send_previews_to_admin(bot: Bot):
                     try:
                         parsed = json.loads(msg['image'])
                         if isinstance(parsed, list):
-                            image_urls = [item['url'] for item in parsed if item.get('url')]
+                            image_urls = [get_absolute_image_url(item['url']) for item in parsed if item.get('url')]
+                        elif isinstance(parsed, str):
+                            image_urls = [get_absolute_image_url(parsed)]
                     except:
-                        pass
+                        image_urls = [get_absolute_image_url(msg['image'])] if msg['image'] else []
 
                 # Кнопки подтверждения/отмены
                 kb = InlineKeyboardBuilder()
