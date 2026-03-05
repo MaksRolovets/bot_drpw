@@ -23,9 +23,9 @@ MYSQL_CONFIG = {
     'database': 'my_database',
     'charset': 'utf8mb4'
 }
-BOT_TOKEN = '8639319444:AAEU9aUaTq3rxuW6xf2nlfXCRiCN37qrD7c' #bot['bot_token']
-#BOT_TOKEN = '6849348700:AAHpEKe3x4eTc_t19l7WTR_y-W1b_o0klmc'
-ADMIN_ID = 5374683743#2109578014  
+#BOT_TOKEN = '8639319444:AAEU9aUaTq3rxuW6xf2nlfXCRiCN37qrD7c' #bot['bot_token']
+BOT_TOKEN = '6849348700:AAHpEKe3x4eTc_t19l7WTR_y-W1b_o0klmc'
+ADMIN_ID = 2109578014#5374683743#2109578014  
 
 # ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
 nodes = {}               # {node_key: {'node_id': id, 'text': ..., 'image': ..., 'is_root': ...}}
@@ -440,14 +440,17 @@ async def send_previews_to_admin(bot: Bot):
                 if sqlite_cur.fetchone():
                     continue
 
-               # Очищаем текст от HTML перед показом в предпросмотре
-                clean_text = clean_html_for_telegram(msg['text'] or "")
+                # Определяем текст для предпросмотра
+                if msg['node_key'] and msg['node_key'] in nodes:
+                    # Берём текст из узла
+                    preview_text_content = clean_html_for_telegram(nodes[msg['node_key']]['text'] or "")
+                else:
+                    preview_text_content = clean_html_for_telegram(msg['text'] or "")
+
                 preview_text = (
-                    f"📨 **Новое отложенное сообщение**\n\n"
-                    f"**Текст:** {clean_text}...\n"
-                    f"**Задержка:** {msg['delay_hours']} {msg['delay_unit']}\n"
-                    f"**Изображение:** {msg['image'] or 'нет'}\n"
-                    f"**Ключ узла:** {msg['node_key'] or 'нет'}"
+                    f"📨 Новое отложенное сообщение\n\n"
+                    f" {preview_text_content[:200]}...\n"
+                    
                 )
                 kb = InlineKeyboardBuilder()
                 kb.button(text="✅ Подтвердить", callback_data=f"confirm:{msg['id']}")
