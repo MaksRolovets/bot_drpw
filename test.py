@@ -23,9 +23,9 @@ MYSQL_CONFIG = {
     'database': 'my_database',
     'charset': 'utf8mb4'
 }
-BOT_TOKEN = '8639319444:AAEU9aUaTq3rxuW6xf2nlfXCRiCN37qrD7c' #bot['bot_token']
-#BOT_TOKEN = '6849348700:AAHpEKe3x4eTc_t19l7WTR_y-W1b_o0klmc'
-ADMIN_ID = 5374683743#2109578014  
+#BOT_TOKEN = '8639319444:AAEU9aUaTq3rxuW6xf2nlfXCRiCN37qrD7c' #bot['bot_token']
+BOT_TOKEN = '6849348700:AAHpEKe3x4eTc_t19l7WTR_y-W1b_o0klmc'
+ADMIN_ID = 2109578014#5374683743#2109578014  
 
 # ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
 nodes = {}               # {node_key: {'node_id': id, 'text': ..., 'image': ..., 'is_root': ...}}
@@ -33,7 +33,7 @@ buttons_by_node = {}     # {node_id: [{'text': ..., 'type': ..., 'target': ...}]
 reply_buttons = {}       # {normalized_text: {'response': ..., 'node_key': ..., 'message_key': ...}}
 reply_button_texts = []  # список текстов для главной клавиатуры
 delayed_messages = []    # список отложенных сообщений (с полем is_active)
-
+START_NODE_KEYS = set()  # множество ключей узлов, которые должны открываться новым сообщением
 # Системные кнопки (тексты)
 CONTACT_BUTTON_TEXT = '✏️Связаться с менеджером'
 MAILING_BUTTON_TEXT = '📨Рассылка'
@@ -55,6 +55,20 @@ class ManagerReplyStates(StatesGroup):
     waiting_for_reply = State()
 
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
+
+import hashlib
+
+def get_message_hash(msg):
+    """Возвращает MD5-хеш содержимого отложенного сообщения."""
+    # Учитываем node_key (если есть), текст, задержку, единицу, изображение
+    if msg.get('node_key'):
+        node = nodes.get(msg['node_key'], {})
+        node_text = node.get('text', '')
+        content = f"{msg['node_key']}_{node_text}_{msg['delay_hours']}_{msg.get('delay_unit', 'hours')}_{msg.get('image', '')}"
+    else:
+        content = f"{msg.get('text', '')}_{msg['delay_hours']}_{msg.get('delay_unit', 'hours')}_{msg.get('image', '')}"
+    return hashlib.md5(content.encode('utf-8')).hexdigest()
+
 def normalize(text: str) -> str:
     if not text:
         return ""
@@ -128,7 +142,21 @@ def load_all_data():
                 'image': row['image_url'],
                 'is_root': row['is_root']
             }
+        global START_NODE_KEYS
+        START_NODE_KEYS = set()
 
+        # Находим node_id узла с ключом 'start'
+        start_node_id = None
+        for key, node in nodes.items():
+            if key == 'start':
+                start_node_id = node['node_id']
+                break
+
+        if start_node_id:
+            START_NODE_KEYS.add('start')
+            for btn in buttons_by_node.get(start_node_id, []):
+                if btn['type'] != 'url':  # только переходы на другие узлы
+                    START_NODE_KEYS.add(btn['target'])
         # 2. Кнопки узлов
         cursor.execute("SELECT node_id, button_text, button_type, target FROM funnel_buttons WHERE is_active = 1 ORDER BY menu_order")
         buttons_by_node.clear()
@@ -307,9 +335,9 @@ def init_db():
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS user_delayed_status (
             user_id INTEGER,
-            delayed_id INTEGER,
+            content_hash TEXT,
             sent_at TEXT,
-            PRIMARY KEY (user_id, delayed_id)
+            PRIMARY KEY (user_id, content_hash)
         )
     ''')
     cursor.execute('''
@@ -348,7 +376,6 @@ async def check_delayed_messages(bot: Bot):
         try:
             conn_sqlite = sqlite3.connect('users.db')
             cursor_sqlite = conn_sqlite.cursor()
-            # Получаем также first_name для подстановки
             cursor_sqlite.execute("SELECT user_id, first_name, join_date FROM users")
             users = cursor_sqlite.fetchall()
             now = datetime.now()
@@ -364,12 +391,14 @@ async def check_delayed_messages(bot: Bot):
                         continue
                     send_time = get_send_time(join_date, msg['delay_hours'], msg['delay_unit'])
                     if now >= send_time:
+                        # Вычисляем хеш содержимого
+                        msg_hash = get_message_hash(msg)
                         cursor_sqlite.execute(
-                            "SELECT 1 FROM user_delayed_status WHERE user_id = ? AND delayed_id = ?",
-                            (user_id, msg['id'])
+                            "SELECT 1 FROM user_delayed_status WHERE user_id = ? AND content_hash = ?",
+                            (user_id, msg_hash)
                         )
                         if cursor_sqlite.fetchone():
-                            continue
+                            continue  # уже отправляли такое сообщение
 
                         # Отправка
                         try:
@@ -377,7 +406,6 @@ async def check_delayed_messages(bot: Bot):
                                 await send_node(user_id, msg['node_key'], bot, user_name=user_name)
                             else:
                                 text = clean_html_for_telegram(msg['text'] or "", name=user_name)
-                                
                                 # Парсим JSON с изображениями
                                 image_urls = []
                                 image_data = msg.get('image')
@@ -385,45 +413,48 @@ async def check_delayed_messages(bot: Bot):
                                     try:
                                         parsed = json.loads(image_data)
                                         if isinstance(parsed, list):
-                                            # Извлекаем все URL из списка объектов
                                             image_urls = [item['url'] for item in parsed if item.get('url')]
                                         elif isinstance(parsed, str):
-                                            # Если это просто строка (старый формат)
                                             image_urls = [parsed]
                                     except json.JSONDecodeError:
-                                        # Не JSON – значит одиночная строка
                                         image_urls = [image_data] if image_data else []
                                 
-                                # Отправка в зависимости от количества фото
                                 if len(image_urls) > 1:
-                                    logging.info(f"Отправка альбома пользователю {user_id}, URL: {image_urls}")
                                     media_group = []
                                     for i, url in enumerate(image_urls):
                                         if i == 0:
                                             media_group.append(InputMediaPhoto(media=url, caption=text, parse_mode="HTML"))
                                         else:
                                             media_group.append(InputMediaPhoto(media=url))
-                                    # Ограничение Telegram – до 10 фото
                                     await bot.send_media_group(user_id, media_group[:10])
                                 elif len(image_urls) == 1:
                                     await bot.send_photo(user_id, image_urls[0], caption=text, parse_mode="HTML")
                                 else:
                                     await bot.send_message(user_id, text, parse_mode="HTML")
 
+                            # Записываем статус по хешу
                             cursor_sqlite.execute(
-                                "INSERT INTO user_delayed_status (user_id, delayed_id, sent_at) VALUES (?, ?, ?)",
-                                (user_id, msg['id'], now.isoformat())
+                                "INSERT OR IGNORE INTO user_delayed_status (user_id, content_hash, sent_at) VALUES (?, ?, ?)",
+                                (user_id, msg_hash, now.isoformat())
                             )
                             conn_sqlite.commit()
-                            logging.info(f"✅ Отложенное #{msg['id']} отправлено пользователю {user_id}")
+                            logging.info(f"✅ Отложенное #{msg['id']} отправлено пользователю {user_id} (хеш: {msg_hash})")
                         except Exception as e:
                             logging.error(f"Ошибка отправки отложенного #{msg['id']} пользователю {user_id}: {e}")
-
+                            if "bot was blocked" in str(e).lower() or "chat not found" in str(e).lower():
+                                cursor_sqlite.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+                                conn_sqlite.commit()
+                            else:
+                                # При других ошибках тоже помечаем, чтобы не повторять
+                                cursor_sqlite.execute(
+                                    "INSERT OR IGNORE INTO user_delayed_status (user_id, content_hash, sent_at) VALUES (?, ?, ?)",
+                                    (user_id, msg_hash, now.isoformat())
+                                )
+                                conn_sqlite.commit()
             conn_sqlite.close()
         except Exception as e:
             logging.error(f"Ошибка в check_delayed_messages: {e}")
         await asyncio.sleep(30)
-
 async def send_previews_to_admin(bot: Bot):
     while True:
         try:
@@ -442,30 +473,49 @@ async def send_previews_to_admin(bot: Bot):
 
                 # Определяем текст для предпросмотра
                 if msg['node_key'] and msg['node_key'] in nodes:
-                    # Берём текст из узла
                     preview_text_content = clean_html_for_telegram(nodes[msg['node_key']]['text'] or "")
                 else:
                     preview_text_content = clean_html_for_telegram(msg['text'] or "")
 
                 preview_text = (
                     f"📨 Новое отложенное сообщение\n\n"
-                    f" {preview_text_content[:200]}...\n"
-                    
+                    f"{preview_text_content[:200]}...\n"
+                    f"📎 Всего изображений: {len(json.loads(msg['image'])) if msg['image'] else 0}"
                 )
+
+                # Парсим изображения (JSON)
+                image_urls = []
+                if msg['image']:
+                    try:
+                        parsed = json.loads(msg['image'])
+                        if isinstance(parsed, list):
+                            image_urls = [item['url'] for item in parsed if item.get('url')]
+                    except:
+                        pass
+
+                # Кнопки подтверждения/отмены
                 kb = InlineKeyboardBuilder()
                 kb.button(text="✅ Подтвердить", callback_data=f"confirm:{msg['id']}")
                 kb.button(text="❌ Отменить", callback_data=f"cancel:{msg['id']}")
                 kb.adjust(2)
 
                 try:
-                    if msg['image']:
-                        await bot.send_photo(ADMIN_ID, msg['image'], caption=preview_text,
-                                             parse_mode="HTML", reply_markup=kb.as_markup())
+                    if image_urls:
+                        # Отправляем альбом (первое фото с подписью)
+                        media_group = []
+                        for i, url in enumerate(image_urls):
+                            if i == 0:
+                                media_group.append(InputMediaPhoto(media=url, caption=preview_text, parse_mode="HTML"))
+                            else:
+                                media_group.append(InputMediaPhoto(media=url))
+                        await bot.send_media_group(ADMIN_ID, media_group[:10])
+                        # После альбома отправляем кнопки отдельным сообщением
+                        await bot.send_message(ADMIN_ID, "Выберите действие:", reply_markup=kb.as_markup())
                     else:
-                        await bot.send_message(ADMIN_ID, preview_text,
-                                               parse_mode="HTML", reply_markup=kb.as_markup())
+                        # Текст без фото
+                        await bot.send_message(ADMIN_ID, preview_text, parse_mode="HTML", reply_markup=kb.as_markup())
                 except Exception as e:
-                    logging.error(f"Не удалось отправить предпросмотр: {e}")
+                    logging.error(f"Не удалось отправить предпросмотр #{msg['id']}: {e}")
                     continue
 
                 sqlite_cur.execute(
@@ -480,7 +530,6 @@ async def send_previews_to_admin(bot: Bot):
         except Exception as e:
             logging.error(f"Ошибка в send_previews_to_admin: {e}")
         await asyncio.sleep(30)
-
 # ========== ОБРАБОТЧИКИ КОМАНД И СООБЩЕНИЙ ==========
 dp = Dispatcher(storage=MemoryStorage())
 
@@ -507,9 +556,15 @@ async def cmd_start(message: types.Message):
 @dp.callback_query(F.data.startswith("node:"))
 async def node_callback(callback: types.CallbackQuery):
     node_key = callback.data.split(":")[1]
-    await send_node(callback.message.chat.id, node_key, callback.bot,
-                user_name=callback.from_user.first_name,
-                edit_message_id=callback.message.message_id)
+    if node_key in START_NODE_KEYS:
+        # Отправляем новое сообщение, исходное остаётся
+        await send_node(callback.message.chat.id, node_key, callback.bot,
+                        user_name=callback.from_user.first_name)
+    else:
+        # Редактируем текущее
+        await send_node(callback.message.chat.id, node_key, callback.bot,
+                        user_name=callback.from_user.first_name,
+                        edit_message_id=callback.message.message_id)
     await callback.answer()
 
 # ---------- Подтверждение/отмена отложенных ----------
@@ -629,8 +684,9 @@ async def calc_dimensions_received(message: types.Message, state: FSMContext):
         diameter = "16-20"
         type_name = "Беседка"
         details = (
-            "✅ Цена указана <b>только за комплект</b> (стеновой комплект + стропильная система).\n"
-            "🚧 Сборка оплачивается отдельно."
+            "🪙 Стоимость указана+/- локоть что бы вы могли от чего-то отталкиваться 🌿\n"
+            "📎  Точная стоимость только после предоставления "'строительного проекта'" \n"
+            "💳 Цены у нашего производства в среднем от 590р до 1790р. за м² в зависимости от ваших пожеланий и комплектации 🤝"
         )
     elif btype == "calc_type_bath":
         # Цена зависит от площади
@@ -641,24 +697,30 @@ async def calc_dimensions_received(message: types.Message, state: FSMContext):
         diameter = "22-24"
         type_name = "Баня"
         details = (
-            "✅ Цена указана <b>только за комплект</b> (стеновой комплект + стропильная система).\n"
-            "🚧 Сборка оплачивается отдельно."
+            "🪙 Стоимость указана+/- локоть что бы вы могли от чего-то отталкиваться 🌿\n"
+            "📎  Точная стоимость только после предоставления "'строительного проекта'" \n"
+            "💳 Цены у нашего производства в среднем от 590р до 1790р. за м² в зависимости от ваших пожеланий и комплектации 🤝"
+
         )
     elif btype == "calc_type_summer":
         price_per_m2 = 980
         diameter = "20-22"
         type_name = "Летний дом"
         details = (
-            "✅ Цена указана <b>только за комплект</b> (стеновой комплект + стропильная система).\n"
-            "🚧 Сборка оплачивается отдельно."
+            "🪙 Стоимость указана+/- локоть что бы вы могли от чего-то отталкиваться 🌿\n"
+            "📎  Точная стоимость только после предоставления "'строительного проекта'" \n"
+            "💳 Цены у нашего производства в среднем от 590р до 1790р. за м² в зависимости от ваших пожеланий и комплектации 🤝"
+
         )
     elif btype == "calc_type_house":
         price_per_m2 = 1150 if area < 50 else 980
         diameter = "28"
-        type_name = "Дом ПП"
+        type_name = "Дом для проживания"
         details = (
-            "✅ Цена указана <b>только за комплект</b> (стеновой комплект + стропильная система).\n"
-            "🚧 Сборка оплачивается отдельно."
+            "🪙 Стоимость указана+/- локоть что бы вы могли от чего-то отталкиваться 🌿\n"
+            "📎  Точная стоимость только после предоставления "'строительного проекта'" \n"
+            "💳 Цены у нашего производства в среднем от 590р до 1790р. за м² в зависимости от ваших пожеланий и комплектации 🤝"
+
         )
     else:
         await message.answer("Ошибка типа. Начните заново.")
@@ -674,7 +736,6 @@ async def calc_dimensions_received(message: types.Message, state: FSMContext):
         f"Цена за м²: <b>от {price_per_m2} руб</b>\n"
         f"<b>Итого: от {total:,.2f} руб.</b>\n\n"
         f"{details}\n\n"
-        f"<i>Точная стоимость зависит от конфигурации и этажности.</i>"
     ).replace(',', ' ')
 
     await message.answer(result_text, parse_mode="HTML", reply_markup=get_calc_new_keyboard())
