@@ -25,7 +25,7 @@ MYSQL_CONFIG = {
 }
 BOT_TOKEN = '8639319444:AAEU9aUaTq3rxuW6xf2nlfXCRiCN37qrD7c' #bot['bot_token']
 #BOT_TOKEN = '6849348700:AAHpEKe3x4eTc_t19l7WTR_y-W1b_o0klmc'
-ADMIN_ID = 5374683743 
+ADMIN_ID = 5374683743#2109578014  
 
 # ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
 nodes = {}               # {node_key: {'node_id': id, 'text': ..., 'image': ..., 'is_root': ...}}
@@ -66,6 +66,9 @@ def clean_html_for_telegram(text, name=None):
 
     if name:
         text = text.replace('{name}', name)
+
+    # Преобразуем __текст__ в <u>текст</u> (подчёркивание)
+    text = re.sub(r'__(.*?)__', r'<u>\1</u>', text, flags=re.DOTALL)
 
     text = html.unescape(text)
     soup = BeautifulSoup(text, "html.parser")
@@ -437,9 +440,11 @@ async def send_previews_to_admin(bot: Bot):
                 if sqlite_cur.fetchone():
                     continue
 
+               # Очищаем текст от HTML перед показом в предпросмотре
+                clean_text = clean_html_for_telegram(msg['text'] or "")
                 preview_text = (
                     f"📨 **Новое отложенное сообщение**\n\n"
-                    f"**Текст:** {clean_html_for_telegram(msg['text'][:200])}...\n"
+                    f"**Текст:** {clean_text}...\n"
                     f"**Задержка:** {msg['delay_hours']} {msg['delay_unit']}\n"
                     f"**Изображение:** {msg['image'] or 'нет'}\n"
                     f"**Ключ узла:** {msg['node_key'] or 'нет'}"
@@ -565,13 +570,15 @@ async def cancel_message(callback: types.CallbackQuery):
         await callback.answer("❌ Ошибка", show_alert=True)
 
 # ---------- Калькулятор ----------
-@dp.callback_query(CalcStates.choosing_type, F.data.startswith("calc_type_"))
+@dp.callback_query(F.data.startswith("calc_type_"))
 async def calc_type_chosen(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
+    await state.set_state(CalcStates.waiting_for_dimensions)
     type_map = {
         "calc_type_gazebo": "Беседка",
-        "calc_type_bath": "Баня / Летний домик (24 диаметр)",
-        "calc_type_house": "Дом ПП (28 диаметр)"
+        "calc_type_bath": "Баня",
+        "calc_type_summer": "Летний дом",
+        "calc_type_house": "Дом для жизни"
     }
     chosen = type_map.get(callback.data, "Неизвестно")
     await state.update_data(building_type=callback.data)
@@ -582,8 +589,6 @@ async def calc_type_chosen(callback: types.CallbackQuery, state: FSMContext):
         f"Выбрано: {chosen}\n\nВведите размеры: два числа (ширина длина) или одно (площадь).",
         reply_markup=cancel_kb.as_markup()
     )
-    await state.set_state(CalcStates.waiting_for_dimensions)
-
 @dp.callback_query(F.data == "calc_cancel_input", CalcStates.waiting_for_dimensions)
 async def calc_cancel_input(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
@@ -677,7 +682,7 @@ async def calc_new(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     await callback.message.delete()
     await callback.message.answer("Выберите тип постройки:", reply_markup=get_calc_type_keyboard())
-    await state.set_state(CalcStates.choosing_type)
+    # состояние не устанавливаем – пользователь снова выбирает тип
 
 @dp.callback_query(F.data == "calc_to_menu")
 async def calc_to_menu(callback: types.CallbackQuery, state: FSMContext):
@@ -951,7 +956,6 @@ async def handle_reply_buttons(message: types.Message, state: FSMContext):
         return
 
     if message.text == CALC_BUTTON_TEXT:
-        await state.set_state(CalcStates.choosing_type)
         await message.answer("Выберите тип постройки:", reply_markup=get_calc_type_keyboard())
         return
 
