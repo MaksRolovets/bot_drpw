@@ -520,57 +520,65 @@ async def send_previews_to_admin(bot: Bot):
                 if sqlite_cur.fetchone():
                     continue
 
-                # Определяем текст для предпросмотра
+                # Если сообщение ссылается на узел – отправляем узел целиком
                 if msg['node_key'] and msg['node_key'] in nodes:
-                    preview_text_content = clean_html_for_telegram(nodes[msg['node_key']]['text'] or "")
+                    # Отправляем узел админу (со всеми inline‑кнопками и изображениями)
+                    await send_node(ADMIN_ID, msg['node_key'], bot, user_name="Админ")
+                    # Отправляем кнопки подтверждения/отмены отдельным сообщением
+                    kb = InlineKeyboardBuilder()
+                    kb.button(text="✅ Подтвердить", callback_data=f"confirm:{msg['id']}")
+                    kb.button(text="❌ Отменить", callback_data=f"cancel:{msg['id']}")
+                    kb.adjust(2)
+                    await bot.send_message(ADMIN_ID, "Выберите действие для этого сообщения:", reply_markup=kb.as_markup())
                 else:
+                    # Обычное отложенное сообщение – отправляем текст и фото
                     preview_text_content = clean_html_for_telegram(msg['text'] or "")
+                    preview_text = (
+                        f"📨 Новое отложенное сообщение\n\n"
+                        f"{preview_text_content}\n"
+                        f"📎 Всего изображений: {len(json.loads(msg['image'])) if msg['image'] else 0}"
+                    )
 
-                preview_text = (
-                    f"📨 Новое отложенное сообщение\n\n"
-                    f"{preview_text_content}\n"
-                    f"📎 Всего изображений: {len(json.loads(msg['image'])) if msg['image'] else 0}"
-                )
+                    # Парсим изображения
+                    image_urls = []
+                    if msg['image']:
+                        try:
+                            parsed = json.loads(msg['image'])
+                            if isinstance(parsed, list):
+                                image_urls = [get_absolute_image_url(item['url']) for item in parsed if item.get('url')]
+                            elif isinstance(parsed, str):
+                                image_urls = [get_absolute_image_url(parsed)]
+                        except:
+                            image_urls = [get_absolute_image_url(msg['image'])] if msg['image'] else []
 
-                # Парсим изображения (JSON)
-                image_urls = []
-                if msg['image']:
+                    # Кнопки подтверждения/отмены
+                    kb = InlineKeyboardBuilder()
+                    kb.button(text="✅ Подтвердить", callback_data=f"confirm:{msg['id']}")
+                    kb.button(text="❌ Отменить", callback_data=f"cancel:{msg['id']}")
+                    kb.adjust(2)
+
                     try:
-                        parsed = json.loads(msg['image'])
-                        if isinstance(parsed, list):
-                            image_urls = [get_absolute_image_url(item['url']) for item in parsed if item.get('url')]
-                        elif isinstance(parsed, str):
-                            image_urls = [get_absolute_image_url(parsed)]
-                    except:
-                        image_urls = [get_absolute_image_url(msg['image'])] if msg['image'] else []
+                        if image_urls:
+                            # Альбом (первое фото с подписью)
+                            media_group = []
+                            for i, url in enumerate(image_urls):
+                                if i == 0:
+                                    media_group.append(InputMediaPhoto(media=url, caption=preview_text, parse_mode="HTML"))
+                                else:
+                                    media_group.append(InputMediaPhoto(media=url))
+                            await bot.send_media_group(ADMIN_ID, media_group[:10])
+                            # После альбома – кнопки
+                            await bot.send_message(ADMIN_ID, "Выберите действие:", reply_markup=kb.as_markup())
+                        else:
+                            # Текст без фото
+                            await bot.send_message(ADMIN_ID, preview_text, parse_mode="HTML", reply_markup=kb.as_markup())
+                    except Exception as e:
+                        logging.error(f"Не удалось отправить предпросмотр #{msg['id']}: {e}")
+                        continue
 
-                # Кнопки подтверждения/отмены
-                kb = InlineKeyboardBuilder()
-                kb.button(text="✅ Подтвердить", callback_data=f"confirm:{msg['id']}")
-                kb.button(text="❌ Отменить", callback_data=f"cancel:{msg['id']}")
-                kb.adjust(2)
-
-                try:
-                    if image_urls:
-                        # Отправляем альбом (первое фото с подписью)
-                        media_group = []
-                        for i, url in enumerate(image_urls):
-                            if i == 0:
-                                media_group.append(InputMediaPhoto(media=url, caption=preview_text, parse_mode="HTML"))
-                            else:
-                                media_group.append(InputMediaPhoto(media=url))
-                        await bot.send_media_group(ADMIN_ID, media_group[:10])
-                        # После альбома отправляем кнопки отдельным сообщением
-                        await bot.send_message(ADMIN_ID, "Выберите действие:", reply_markup=kb.as_markup())
-                    else:
-                        # Текст без фото
-                        await bot.send_message(ADMIN_ID, preview_text, parse_mode="HTML", reply_markup=kb.as_markup())
-                except Exception as e:
-                    logging.error(f"Не удалось отправить предпросмотр #{msg['id']}: {e}")
-                    continue
-
+                # Помечаем, что предпросмотр отправлен (без удаления старых сообщений)
                 sqlite_cur.execute(
-                    "INSERT INTO preview_sent (message_id, sent_at) VALUES (?, ?)",
+                    "INSERT OR IGNORE INTO preview_sent (message_id, sent_at) VALUES (?, ?)",
                     (msg['id'], datetime.now().isoformat())
                 )
                 sqlite_conn.commit()
