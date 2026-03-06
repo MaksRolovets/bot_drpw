@@ -313,9 +313,9 @@ async def send_node(chat_id, node_key, bot, user_name=None, edit_message_id=None
         return
     node = nodes[node_key]
     original_text = node['text'] or "Пустое сообщение"
-    logging.info(f"📥 [{node_key}] ДО clean_html: {original_text[:200]}")
+    logging.info(f"📥 [{node_key}] ДО clean_html: {original_text}")
     text = clean_html_for_telegram(node['text'] or "Пустое сообщение", name=user_name)
-    logging.info(f"📤 [{node_key}] ПОСЛЕ clean_html: {text[:200]}")
+    logging.info(f"📤 [{node_key}] ПОСЛЕ clean_html: {text}")
 
     # Парсим изображения из JSON
     image_urls = []
