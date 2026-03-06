@@ -22,10 +22,10 @@ MYSQL_CONFIG = {
     'password': '!qwert12345',
     'database': 'my_database',
     'charset': 'utf8mb4'
-}
+} 
 BOT_TOKEN = '8639319444:AAEU9aUaTq3rxuW6xf2nlfXCRiCN37qrD7c' #bot['bot_token']
 #BOT_TOKEN = '6849348700:AAHpEKe3x4eTc_t19l7WTR_y-W1b_o0klmc'
-ADMIN_ID = 5374683743
+ADMIN_ID = 5374683743#2109578014#5374683743
 
 # ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
 BASE_IMAGE_URL = "https://horrifyingly-enchanted-bandicoot.cloudpub.ru/"
@@ -95,10 +95,37 @@ def clean_html_for_telegram(text, name=None):
     if name:
         text = text.replace('{name}', name)
 
-    # Преобразуем __текст__ в <u>текст</u> (подчёркивание)
-    text = re.sub(r'__(.*?)__', r'<u>\1</u>', text, flags=re.DOTALL)
-
+    # Декодируем HTML-сущности
     text = html.unescape(text)
+    
+    # Функция для обработки подчёркиваний с HTML внутри
+    def replace_underscores(match):
+        content = match.group(1).strip()
+        if content:
+            return f'<u>{content}</u>'
+        return ''
+    
+    # ВАЖНО: сначала заменяем все __...__ на временные маркеры, 
+    # чтобы регулярка не ломалась на вложенных тегах
+    parts = []
+    last_end = 0
+    pattern = re.compile(r'__(.*?)__', re.DOTALL)
+    
+    for match in pattern.finditer(text):
+        start, end = match.span()
+        # Добавляем текст до совпадения
+        parts.append(text[last_end:start])
+        # Добавляем обработанное совпадение
+        content = match.group(1)
+        if content.strip():
+            parts.append(f'<u>{content}</u>')
+        last_end = end
+    
+    # Добавляем остаток текста
+    parts.append(text[last_end:])
+    text = ''.join(parts)
+    
+    # Парсим HTML
     soup = BeautifulSoup(text, "html.parser")
 
     allowed_tags = {"b", "strong", "i", "em", "u", "a"}
@@ -118,6 +145,11 @@ def clean_html_for_telegram(text, name=None):
                     tag["href"] = href
             else:
                 tag.attrs = {}
+
+    # Убираем пустые теги
+    for u_tag in soup.find_all("u"):
+        if not u_tag.get_text(strip=True):
+            u_tag.decompose()
 
     blocks = []
 
@@ -280,8 +312,11 @@ async def send_node(chat_id, node_key, bot, user_name=None, edit_message_id=None
         await bot.send_message(chat_id, "Узел не найден")
         return
     node = nodes[node_key]
+    original_text = node['text'] or "Пустое сообщение"
+    logging.info(f"📥 [{node_key}] ДО clean_html: {original_text[:200]}")
     text = clean_html_for_telegram(node['text'] or "Пустое сообщение", name=user_name)
-    
+    logging.info(f"📤 [{node_key}] ПОСЛЕ clean_html: {text[:200]}")
+
     # Парсим изображения из JSON
     image_urls = []
     image_data = node.get('image')
@@ -1079,5 +1114,7 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+
 
 
