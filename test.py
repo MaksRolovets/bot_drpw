@@ -23,9 +23,9 @@ MYSQL_CONFIG = {
     'database': 'my_database',
     'charset': 'utf8mb4'
 } 
-BOT_TOKEN = '8639319444:AAEU9aUaTq3rxuW6xf2nlfXCRiCN37qrD7c' #bot['bot_token']
-#BOT_TOKEN = '6849348700:AAHpEKe3x4eTc_t19l7WTR_y-W1b_o0klmc'
-ADMIN_ID = 5374683743#2109578014#5374683743
+#BOT_TOKEN = '8639319444:AAEU9aUaTq3rxuW6xf2nlfXCRiCN37qrD7c' #bot['bot_token']
+BOT_TOKEN = '6849348700:AAHpEKe3x4eTc_t19l7WTR_y-W1b_o0klmc'
+ADMIN_ID = 2109578014#5374683743
 
 # ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
 BASE_IMAGE_URL = "https://horrifyingly-enchanted-bandicoot.cloudpub.ru/"
@@ -105,23 +105,18 @@ def clean_html_for_telegram(text, name=None):
             return f'<u>{content}</u>'
         return ''
     
-    # ВАЖНО: сначала заменяем все __...__ на временные маркеры, 
-    # чтобы регулярка не ломалась на вложенных тегах
+    # Сначала заменяем все __...__ на <u>...</u>
     parts = []
     last_end = 0
     pattern = re.compile(r'__(.*?)__', re.DOTALL)
     
     for match in pattern.finditer(text):
         start, end = match.span()
-        # Добавляем текст до совпадения
         parts.append(text[last_end:start])
-        # Добавляем обработанное совпадение
         content = match.group(1)
         if content.strip():
             parts.append(f'<u>{content}</u>')
         last_end = end
-    
-    # Добавляем остаток текста
     parts.append(text[last_end:])
     text = ''.join(parts)
     
@@ -130,10 +125,11 @@ def clean_html_for_telegram(text, name=None):
 
     allowed_tags = {"b", "strong", "i", "em", "u", "a"}
 
-    # <br> заменяем на перенос строки
+    # Заменяем <br> на перенос строки
     for br in soup.find_all("br"):
         br.replace_with("\n")
 
+    # Удаляем неразрешённые теги, сохраняя содержимое
     for tag in soup.find_all(True):
         if tag.name not in allowed_tags and tag.name != "p":
             tag.unwrap()
@@ -146,20 +142,26 @@ def clean_html_for_telegram(text, name=None):
             else:
                 tag.attrs = {}
 
-    # Убираем пустые теги
+    # Убираем пустые теги <u>
     for u_tag in soup.find_all("u"):
         if not u_tag.get_text(strip=True):
             u_tag.decompose()
 
-    blocks = []
+    # Нормализуем пробелы: заменяем множественные пробелы на один
+    # (но не трогаем переносы строк)
+    for text_node in soup.find_all(string=True):
+        if text_node.parent.name not in ['script', 'style']:
+            normalized = re.sub(r'[ \t]+', ' ', text_node)
+            if normalized != text_node:
+                text_node.replace_with(normalized)
 
+    # Собираем содержимое параграфов
+    blocks = []
     for p in soup.find_all("p"):
         inner = "".join(str(x) for x in p.contents).strip()
-
         check_text = BeautifulSoup(inner, "html.parser").get_text().strip()
         if not check_text or check_text.replace("\xa0", "").strip() == "":
             continue
-
         blocks.append(inner)
 
     if blocks:
@@ -167,9 +169,13 @@ def clean_html_for_telegram(text, name=None):
     else:
         cleaned = str(soup)
 
+    # Окончательная чистка
     cleaned = cleaned.replace("\xa0", " ")
     cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
-
+    # Убираем лишние пробелы перед знаками препинания (опционально)
+    cleaned = re.sub(r'\s+([.,!?;:])', r'\1', cleaned)
+    # Убираем пробелы в начале и конце строк
+    cleaned = '\n'.join(line.strip() for line in cleaned.split('\n'))
     return cleaned.strip()
 # ========== ЗАГРУЗКА ДАННЫХ ==========
 def load_all_data():
@@ -505,6 +511,7 @@ async def check_delayed_messages(bot: Bot):
             logging.error(f"Ошибка в check_delayed_messages: {e}")
         await asyncio.sleep(30)
 async def send_previews_to_admin(bot: Bot):
+    
     while True:
         try:
             pending = [msg for msg in delayed_messages if msg['is_active'] == 1]
@@ -523,7 +530,7 @@ async def send_previews_to_admin(bot: Bot):
                 # Если сообщение ссылается на узел – отправляем узел целиком
                 if msg['node_key'] and msg['node_key'] in nodes:
                     # Отправляем узел админу (со всеми inline‑кнопками и изображениями)
-                    await send_node(ADMIN_ID, msg['node_key'], bot, user_name="Админ")
+                    await send_node(ADMIN_ID, msg['node_key'], bot,user_name="Drev.house👉 Строительство 🪓" )
                     # Отправляем кнопки подтверждения/отмены отдельным сообщением
                     kb = InlineKeyboardBuilder()
                     kb.button(text="✅ Подтвердить", callback_data=f"confirm:{msg['id']}")
@@ -1108,12 +1115,20 @@ async def handle_reply_buttons(message: types.Message, state: FSMContext):
             parse_mode="HTML",
             reply_markup=get_main_keyboard(uid)
         )# ---------- Запуск ----------
+
+async def get_admin_name(bot):
+    try:
+        chat = await bot.get_chat(ADMIN_ID)
+        return chat.first_name or "Админ"
+    except:
+        return "Админ"
+
+
 async def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     init_db()
     load_all_data()
     bot = Bot(token=BOT_TOKEN)
-
     asyncio.create_task(refresh_loop())
     asyncio.create_task(check_delayed_messages(bot))
     asyncio.create_task(send_previews_to_admin(bot))
