@@ -8,7 +8,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
-BOT_TOKEN = '6849348700:AAHpEKe3x4eTc_t19l7WTR_y-W1b_o0klmc'
+BOT_TOKEN = '8507123559:AAGufCpotTM5Y9svjQuMEjJ53u-2h5NmICI'
 ADMIN_ID = 2109578014  # можно оставить того же админа или другого
 
 CALC_BUTTON_TEXT = '💵 Рассчитать стоимость'
