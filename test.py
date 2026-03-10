@@ -23,9 +23,9 @@ MYSQL_CONFIG = {
     'database': 'my_database',
     'charset': 'utf8mb4'
 } 
-BOT_TOKEN = '8639319444:AAEU9aUaTq3rxuW6xf2nlfXCRiCN37qrD7c' #bot['bot_token']
-#BOT_TOKEN = '6849348700:AAHpEKe3x4eTc_t19l7WTR_y-W1b_o0klmc'
-ADMIN_ID = 5374683743#2109578014#
+#BOT_TOKEN = '8639319444:AAEU9aUaTq3rxuW6xf2nlfXCRiCN37qrD7c' #bot['bot_token']
+BOT_TOKEN = '6849348700:AAHpEKe3x4eTc_t19l7WTR_y-W1b_o0klmc'
+ADMIN_ID = 2109578014#5374683743#2109578014#
 
 
 # ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
@@ -550,7 +550,7 @@ async def send_previews_to_admin(bot: Bot):
                     await bot.send_message(ADMIN_ID, "Выберите действие для этого сообщения:", reply_markup=kb.as_markup())
                 else:
                     # Обычное отложенное сообщение – отправляем текст и фото
-                    preview_text_content = clean_html_for_telegram(msg['text'] or "")
+                    preview_text_content = clean_html_for_telegram(msg['text'] or "", name= "Drev.house👉 Строительство 🪓")
                     preview_text = (
                         f"📨 Новое отложенное сообщение\n\n"
                         f"{preview_text_content}\n"
@@ -1267,7 +1267,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-
-
 
