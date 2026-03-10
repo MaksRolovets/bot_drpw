@@ -437,6 +437,9 @@ def get_active_managers():
 
 # ========== ФОНОВЫЕ ЗАДАЧИ ==========
 async def check_delayed_messages(bot: Bot):
+    # Константа: максимально допустимое опоздание (например, 1 час)
+    MAX_OVERDUE = timedelta(hours=1)
+
     while True:
         try:
             conn_sqlite = sqlite3.connect('users.db')
@@ -454,73 +457,95 @@ async def check_delayed_messages(bot: Bot):
                 for msg in delayed_messages:
                     if msg['is_active'] != 0:  # отправляем только подтверждённые (is_active=0)
                         continue
+
+                    # Время, когда должно быть отправлено
                     send_time = get_send_time(join_date, msg['delay_hours'], msg['delay_unit'])
-                    if now >= send_time:
-                        # Вычисляем хеш содержимого
-                        msg_hash = get_message_hash(msg)
+
+                    # Если время ещё не наступило – пропускаем
+                    if now < send_time:
+                        continue
+
+                    # Вычисляем хеш содержимого
+                    msg_hash = get_message_hash(msg)
+
+                    # Проверяем, не отправляли ли уже такое содержимое этому пользователю
+                    cursor_sqlite.execute(
+                        "SELECT 1 FROM user_delayed_status WHERE user_id = ? AND content_hash = ?",
+                        (user_id, msg_hash)
+                    )
+                    if cursor_sqlite.fetchone():
+                        continue  # уже отправляли
+
+                    # --- НОВЫЙ БЛОК: проверка на просроченность ---
+                    # Если текущее время сильно превышает запланированное (больше чем MAX_OVERDUE)
+                    if now > send_time + MAX_OVERDUE:
+                        # Помечаем как отправленное, чтобы больше не пытаться
                         cursor_sqlite.execute(
-                            "SELECT 1 FROM user_delayed_status WHERE user_id = ? AND content_hash = ?",
-                            (user_id, msg_hash)
+                            "INSERT OR IGNORE INTO user_delayed_status (user_id, content_hash, sent_at) VALUES (?, ?, ?)",
+                            (user_id, msg_hash, now.isoformat())
                         )
-                        if cursor_sqlite.fetchone():
-                            continue  # уже отправляли такое сообщение
+                        conn_sqlite.commit()
+                        logging.info(f"⏭️ Сообщение #{msg['id']} просрочено, помечено как отправленное для пользователя {user_id}")
+                        continue
+                    # --- КОНЕЦ НОВОГО БЛОКА ---
 
-                        # Отправка
-                        try:
-                            if msg['node_key']:
-                                await send_node(user_id, msg['node_key'], bot, user_name=user_name)
+                    # Отправка
+                    try:
+                        if msg['node_key']:
+                            await send_node(user_id, msg['node_key'], bot, user_name=user_name)
+                        else:
+                            text = clean_html_for_telegram(msg['text'] or "", name=user_name)
+                            # Парсим JSON с изображениями
+                            image_urls = []
+                            image_data = msg.get('image')
+                            if image_data:
+                                try:
+                                    parsed = json.loads(image_data)
+                                    if isinstance(parsed, list):
+                                        image_urls = [get_absolute_image_url(item['url']) for item in parsed if item.get('url')]
+                                    elif isinstance(parsed, str):
+                                        image_urls = [get_absolute_image_url(parsed)]
+                                except json.JSONDecodeError:
+                                    image_urls = [get_absolute_image_url(image_data)] if image_data else []
+                            
+                            if len(image_urls) > 1:
+                                media_group = []
+                                for i, url in enumerate(image_urls):
+                                    if i == 0:
+                                        media_group.append(InputMediaPhoto(media=url, caption=text, parse_mode="HTML"))
+                                    else:
+                                        media_group.append(InputMediaPhoto(media=url))
+                                await bot.send_media_group(user_id, media_group[:10])
+                            elif len(image_urls) == 1:
+                                await bot.send_photo(user_id, image_urls[0], caption=text, parse_mode="HTML")
                             else:
-                                text = clean_html_for_telegram(msg['text'] or "", name=user_name)
-                                # Парсим JSON с изображениями
-                                image_data = msg.get('image')
-                                image_urls = []
-                                image_data = msg.get('image')
-                                if image_data:
-                                    try:
-                                        parsed = json.loads(image_data)
-                                        if isinstance(parsed, list):
-                                            image_urls = [get_absolute_image_url(item['url']) for item in parsed if item.get('url')]
-                                        elif isinstance(parsed, str):
-                                            image_urls = [get_absolute_image_url(parsed)]
-                                    except json.JSONDecodeError:
-                                        image_urls = [get_absolute_image_url(image_data)] if image_data else []
-                                
-                                if len(image_urls) > 1:
-                                    media_group = []
-                                    for i, url in enumerate(image_urls):
-                                        if i == 0:
-                                            media_group.append(InputMediaPhoto(media=url, caption=text, parse_mode="HTML"))
-                                        else:
-                                            media_group.append(InputMediaPhoto(media=url))
-                                    await bot.send_media_group(user_id, media_group[:10])
-                                elif len(image_urls) == 1:
-                                    await bot.send_photo(user_id, image_urls[0], caption=text, parse_mode="HTML")
-                                else:
-                                    await bot.send_message(user_id, text, parse_mode="HTML")
+                                await bot.send_message(user_id, text, parse_mode="HTML")
 
-                            # Записываем статус по хешу
+                        # Записываем статус по хешу
+                        cursor_sqlite.execute(
+                            "INSERT OR IGNORE INTO user_delayed_status (user_id, content_hash, sent_at) VALUES (?, ?, ?)",
+                            (user_id, msg_hash, now.isoformat())
+                        )
+                        conn_sqlite.commit()
+                        logging.info(f"✅ Отложенное #{msg['id']} отправлено пользователю {user_id} (хеш: {msg_hash})")
+                    except Exception as e:
+                        logging.error(f"Ошибка отправки отложенного #{msg['id']} пользователю {user_id}: {e}")
+                        if "bot was blocked" in str(e).lower() or "chat not found" in str(e).lower():
+                            cursor_sqlite.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+                            conn_sqlite.commit()
+                        else:
+                            # При других ошибках тоже помечаем, чтобы не повторять
                             cursor_sqlite.execute(
                                 "INSERT OR IGNORE INTO user_delayed_status (user_id, content_hash, sent_at) VALUES (?, ?, ?)",
                                 (user_id, msg_hash, now.isoformat())
                             )
                             conn_sqlite.commit()
-                            logging.info(f"✅ Отложенное #{msg['id']} отправлено пользователю {user_id} (хеш: {msg_hash})")
-                        except Exception as e:
-                            logging.error(f"Ошибка отправки отложенного #{msg['id']} пользователю {user_id}: {e}")
-                            if "bot was blocked" in str(e).lower() or "chat not found" in str(e).lower():
-                                cursor_sqlite.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
-                                conn_sqlite.commit()
-                            else:
-                                # При других ошибках тоже помечаем, чтобы не повторять
-                                cursor_sqlite.execute(
-                                    "INSERT OR IGNORE INTO user_delayed_status (user_id, content_hash, sent_at) VALUES (?, ?, ?)",
-                                    (user_id, msg_hash, now.isoformat())
-                                )
-                                conn_sqlite.commit()
+
             conn_sqlite.close()
         except Exception as e:
             logging.error(f"Ошибка в check_delayed_messages: {e}")
         await asyncio.sleep(30)
+
 async def send_previews_to_admin(bot: Bot):
     
     while True:
