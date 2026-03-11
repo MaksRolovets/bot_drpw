@@ -26,7 +26,7 @@ MYSQL_CONFIG = {
 #BOT_TOKEN = '6609879243:AAGRnV1wY7bdW-05uD4eWUwWr20TW1tck5c'
 BOT_TOKEN = '8639319444:AAEU9aUaTq3rxuW6xf2nlfXCRiCN37qrD7c' #bot['bot_token']
 #BOT_TOKEN = '6849348700:AAHpEKe3x4eTc_t19l7WTR_y-W1b_o0klmc'
-ADMIN_ID = 5374683743#2109578014#
+ADMIN_ID = 5374683743#2109578014#5374683743#2109578014#
 
 
 # ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
@@ -383,6 +383,7 @@ async def send_node(chat_id, node_key, bot, user_name=None, edit_message_id=None
             await bot.send_photo(chat_id, image_urls[0], caption=text, parse_mode="HTML", reply_markup=keyboard)
         else:
             await bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=keyboard)# ========== SQLite ДЛЯ ПОЛЬЗОВАТЕЛЕЙ И СТАТУСОВ ==========
+
 def init_db():
     conn = sqlite3.connect('users.db')
     cursor = conn.cursor()
@@ -413,6 +414,13 @@ def init_db():
             sent_at TEXT
         )
     ''')
+    # НОВАЯ ТАБЛИЦА ДЛЯ ХРАНЕНИЯ ВРЕМЕНИ ПОСЛЕДНЕЙ ОТПРАВКИ
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS user_last_sent (
+            user_id INTEGER PRIMARY KEY,
+            last_sent_at TEXT
+        )
+    ''')
     conn.commit()
     conn.close()
     logging.info("✅ SQLite инициализирована")
@@ -438,8 +446,8 @@ def get_active_managers():
     return [ADMIN_ID]
 
 async def check_delayed_messages(bot: Bot):
-    # Константа: максимально допустимое опоздание (например, 1 час)
-    MAX_OVERDUE = timedelta(hours=1)
+    MAX_OVERDUE = timedelta(hours=1)   # порог просроченности
+    INTERVAL = timedelta(days=2)        # интервал между просроченными
 
     while True:
         try:
@@ -455,54 +463,45 @@ async def check_delayed_messages(bot: Bot):
                 except:
                     continue
 
+                # Собираем все готовые сообщения для этого пользователя
+                fresh_msgs = []    # не просрочены (придут сразу)
+                overdue_msgs = []  # просрочены (будут с интервалом)
+
                 for msg in delayed_messages:
-                    if msg['is_active'] != 0:  # отправляем только подтверждённые (is_active=0)
+                    if msg['is_active'] != 0:
                         continue
-
-                    # Время, когда должно быть отправлено
                     send_time = get_send_time(join_date, msg['delay_hours'], msg['delay_unit'])
-
-                    # Если время ещё не наступило – пропускаем
                     if now < send_time:
-                        continue
+                        continue  # ещё не время
 
-                    # Определяем идентификатор для статуса (family_id или хеш)
+                    # Определяем status_id
                     if msg.get('family_id'):
                         status_id = msg['family_id']
                     else:
-                        # Для обратной совместимости используем хеш
                         status_id = get_message_hash(msg)
 
-                    # Проверяем, не отправляли ли уже это семейство (или хеш) пользователю
+                    # Проверяем, не отправляли ли уже это семейство
                     cursor_sqlite.execute(
                         "SELECT 1 FROM user_delayed_status WHERE user_id = ? AND family_id = ?",
                         (user_id, status_id)
                     )
                     if cursor_sqlite.fetchone():
-                        continue  # уже отправляли
+                        continue
 
-                    # --- Проверка на просроченность (только для сообщений без family_id) ---
-                    if not msg.get('family_id'):
-                        if now > send_time + MAX_OVERDUE:
-                            cursor_sqlite.execute(
-                                "INSERT OR IGNORE INTO user_delayed_status (user_id, family_id, sent_at) VALUES (?, ?, ?)",
-                                (user_id, status_id, now.isoformat())
-                            )
-                            conn_sqlite.commit()
-                            logging.info(f"⏭️ Сообщение #{msg['id']} (без family_id) просрочено, помечено как отправленное для пользователя {user_id}")
-                            continue
-                    # --- КОНЕЦ ПРОВЕРКИ ---
+                    # Разделяем на свежие и просроченные
+                    if now <= send_time + MAX_OVERDUE:
+                        fresh_msgs.append((send_time, msg, status_id))
+                    else:
+                        overdue_msgs.append((send_time, msg, status_id))
 
-                    # Отправка
+                # Сначала отправляем свежие сообщения (без ограничений)
+                fresh_msgs.sort(key=lambda x: x[0])  # по времени отправки
+                for send_time, msg, status_id in fresh_msgs:
                     try:
                         if msg['node_key']:
-                            # Отправляем через узел
                             await send_node(user_id, msg['node_key'], bot, user_name=user_name)
-                            logging.info(f"✅ Узел {msg['node_key']} отправлен пользователю {user_id}")
                         else:
-                            # Обычное сообщение с текстом и/или изображениями
                             text = clean_html_for_telegram(msg['text'] or "", name=user_name)
-                            # Парсим JSON с изображениями
                             image_urls = []
                             image_data = msg.get('image')
                             if image_data:
@@ -523,40 +522,100 @@ async def check_delayed_messages(bot: Bot):
                                     else:
                                         media_group.append(InputMediaPhoto(media=url))
                                 await bot.send_media_group(user_id, media_group[:10])
-                                logging.info(f"📸 Альбом отправлен пользователю {user_id} (сообщение #{msg['id']})")
                             elif len(image_urls) == 1:
                                 await bot.send_photo(user_id, image_urls[0], caption=text, parse_mode="HTML")
-                                logging.info(f"🖼️ Фото отправлено пользователю {user_id} (сообщение #{msg['id']})")
                             else:
                                 await bot.send_message(user_id, text, parse_mode="HTML")
-                                logging.info(f"💬 Текст отправлен пользователю {user_id} (сообщение #{msg['id']})")
 
-                        # Записываем статус по family_id (или хешу)
+                        # Помечаем семейство как отправленное
                         cursor_sqlite.execute(
                             "INSERT OR IGNORE INTO user_delayed_status (user_id, family_id, sent_at) VALUES (?, ?, ?)",
                             (user_id, status_id, now.isoformat())
                         )
-                        if cursor_sqlite.rowcount == 0:
-                            logging.warning(f"⚠️ Статус для family_id={status_id} уже существовал")
-                        else:
-                            logging.info(f"✅ Статус записан для family_id={status_id}")
+                        # Обновляем время последней отправки (даже для свежих, чтобы интервал для просроченных считался)
+                        cursor_sqlite.execute(
+                            "REPLACE INTO user_last_sent (user_id, last_sent_at) VALUES (?, ?)",
+                            (user_id, now.isoformat())
+                        )
                         conn_sqlite.commit()
-
+                        logging.info(f"✅ Свежее #{msg['id']} отправлено пользователю {user_id} (семейство {status_id})")
                     except Exception as e:
-                        logging.error(f"Ошибка отправки отложенного #{msg['id']} пользователю {user_id}: {e}", exc_info=True)
+                        logging.error(f"Ошибка отправки свежего #{msg['id']}: {e}", exc_info=True)
                         if "bot was blocked" in str(e).lower() or "chat not found" in str(e).lower():
                             cursor_sqlite.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
                             conn_sqlite.commit()
-                            logging.info(f"Пользователь {user_id} удалён из-за блокировки")
                         else:
-                            # При других ошибках тоже помечаем, чтобы не повторять
                             cursor_sqlite.execute(
                                 "INSERT OR IGNORE INTO user_delayed_status (user_id, family_id, sent_at) VALUES (?, ?, ?)",
                                 (user_id, status_id, now.isoformat())
                             )
-                            if cursor_sqlite.rowcount:
-                                logging.info(f"⚠️ Ошибка, но статус для family_id={status_id} записан")
                             conn_sqlite.commit()
+
+                # Теперь обрабатываем просроченные сообщения с интервалом 2 дня
+                if overdue_msgs:
+                    # Получаем время последней отправки (учитываем, что могли отправить свежие)
+                    cursor_sqlite.execute("SELECT last_sent_at FROM user_last_sent WHERE user_id = ?", (user_id,))
+                    row = cursor_sqlite.fetchone()
+                    last_sent = datetime.fromisoformat(row[0]) if row and row[0] else None
+
+                    # Если прошло достаточно времени – отправляем одно самое старое просроченное
+                    if last_sent is None or (now - last_sent) >= INTERVAL:
+                        overdue_msgs.sort(key=lambda x: x[0])  # самое старое первым
+                        send_time, msg, status_id = overdue_msgs[0]
+                        try:
+                            if msg['node_key']:
+                                await send_node(user_id, msg['node_key'], bot, user_name=user_name)
+                            else:
+                                text = clean_html_for_telegram(msg['text'] or "", name=user_name)
+                                image_urls = []
+                                image_data = msg.get('image')
+                                if image_data:
+                                    try:
+                                        parsed = json.loads(image_data)
+                                        if isinstance(parsed, list):
+                                            image_urls = [get_absolute_image_url(item['url']) for item in parsed if item.get('url')]
+                                        elif isinstance(parsed, str):
+                                            image_urls = [get_absolute_image_url(parsed)]
+                                    except json.JSONDecodeError:
+                                        image_urls = [get_absolute_image_url(image_data)] if image_data else []
+                                
+                                if len(image_urls) > 1:
+                                    media_group = []
+                                    for i, url in enumerate(image_urls):
+                                        if i == 0:
+                                            media_group.append(InputMediaPhoto(media=url, caption=text, parse_mode="HTML"))
+                                        else:
+                                            media_group.append(InputMediaPhoto(media=url))
+                                    await bot.send_media_group(user_id, media_group[:10])
+                                elif len(image_urls) == 1:
+                                    await bot.send_photo(user_id, image_urls[0], caption=text, parse_mode="HTML")
+                                else:
+                                    await bot.send_message(user_id, text, parse_mode="HTML")
+
+                            cursor_sqlite.execute(
+                                "INSERT OR IGNORE INTO user_delayed_status (user_id, family_id, sent_at) VALUES (?, ?, ?)",
+                                (user_id, status_id, now.isoformat())
+                            )
+                            cursor_sqlite.execute(
+                                "REPLACE INTO user_last_sent (user_id, last_sent_at) VALUES (?, ?)",
+                                (user_id, now.isoformat())
+                            )
+                            conn_sqlite.commit()
+                            logging.info(f"✅ Просроченное #{msg['id']} отправлено пользователю {user_id} (семейство {status_id})")
+                        except Exception as e:
+                            logging.error(f"Ошибка отправки просроченного #{msg['id']}: {e}", exc_info=True)
+                            if "bot was blocked" in str(e).lower() or "chat not found" in str(e).lower():
+                                cursor_sqlite.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+                                conn_sqlite.commit()
+                            else:
+                                cursor_sqlite.execute(
+                                    "INSERT OR IGNORE INTO user_delayed_status (user_id, family_id, sent_at) VALUES (?, ?, ?)",
+                                    (user_id, status_id, now.isoformat())
+                                )
+                                conn_sqlite.commit()
+                    else:
+                        # Не прошло 2 дня – ничего не отправляем
+                        logging.debug(f"⏳ Для пользователя {user_id} ещё не прошло 2 дня, просроченные ждут")
 
             conn_sqlite.close()
         except Exception as e:
