@@ -24,8 +24,8 @@ MYSQL_CONFIG = {
     'charset': 'utf8mb4'
 } 
 #BOT_TOKEN = '6609879243:AAGRnV1wY7bdW-05uD4eWUwWr20TW1tck5c'
-BOT_TOKEN = '8639319444:AAEU9aUaTq3rxuW6xf2nlfXCRiCN37qrD7c' #bot['bot_token']
-#BOT_TOKEN = '6849348700:AAHpEKe3x4eTc_t19l7WTR_y-W1b_o0klmc'
+#BOT_TOKEN = '8639319444:AAEU9aUaTq3rxuW6xf2nlfXCRiCN37qrD7c' #bot['bot_token']
+BOT_TOKEN = '8657359459:AAFi7zU5cA8oW8xqSY2zL2htDD_eNjcdwPk'
 ADMIN_ID = 5374683743#2109578014#
 
 
@@ -187,7 +187,7 @@ def load_all_data():
         cursor = conn.cursor(dictionary=True)
 
         # 1. Узлы воронки
-        cursor.execute("SELECT node_id, node_key, message_text, image_url, is_root FROM funnel_nodes WHERE is_active = 1")
+        cursor.execute("SELECT node_id, node_key, message_text, image_url, is_root FROM funnel_nodes WHERE is_active = 1 AND bot_id = 5")
         nodes.clear()
         for row in cursor.fetchall():
             nodes[row['node_key']] = {
@@ -211,7 +211,7 @@ def load_all_data():
             })
 
         # 3. Reply-кнопки
-        cursor.execute("SELECT button_text, response_text, node_key, message_key FROM bot_buttons WHERE bot_id = 1 AND is_active = 1 ORDER BY menu_order")
+        cursor.execute("SELECT button_text, response_text, node_key, message_key FROM bot_buttons WHERE bot_id = 5 AND is_active = 1 ORDER BY menu_order")
         reply_buttons.clear()
         reply_button_texts.clear()
         for row in cursor.fetchall():
@@ -240,7 +240,7 @@ def load_all_data():
         cursor.execute("""
             SELECT id, node_key, message_text, image_url, delay_hours, delay_unit, is_active, family_id
             FROM delayed_messages
-            WHERE bot_id = 1
+            WHERE bot_id = 5
         """)
         delayed_messages.clear()
         for row in cursor.fetchall():
