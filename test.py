@@ -187,7 +187,7 @@ def load_all_data():
         cursor = conn.cursor(dictionary=True)
 
         # 1. Узлы воронки
-        cursor.execute("SELECT node_id, node_key, message_text, image_url, is_root FROM funnel_nodes WHERE is_active = 1")
+        cursor.execute("SELECT node_id, node_key, message_text, image_url, is_root FROM funnel_nodes WHERE is_active = 1 AND bot_id = 1")
         nodes.clear()
         for row in cursor.fetchall():
             nodes[row['node_key']] = {
